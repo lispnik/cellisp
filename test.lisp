@@ -271,6 +271,44 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
       (check (name-ref s2 "x") '(0 . 0))
       (check (get-value s2 "A2") 6)))
 
+  ;; undo/redo of a formula edit, cascading to dependents
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (set-cell s "A2" '(* (cell "A1") 10))
+    (set-cell s "A1" 5)                                  ; A2 -> 50
+    (check (get-value s "A2") 50)
+    (check (undo s) t)                                   ; revert A1 to 1
+    (check (get-value s "A1") 1)
+    (check (get-value s "A2") 10)                        ; dependent recomputed
+    (check (redo s) t)                                   ; A1 back to 5
+    (check (get-value s "A1") 5)
+    (check (get-value s "A2") 50))
+
+  ;; undo of a brand-new cell removes it; nothing-to-undo returns NIL
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 7)
+    (check (undo s) t)
+    (multiple-value-bind (v e) (get-value s "A1")
+      (check v nil) (check e nil))                       ; absent again
+    (check (undo s) nil))                                ; stack empty
+
+  ;; undo of clear-cell recreates the cell
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 9)
+    (clear-cell s "A1")
+    (check (get-value s "A1") nil)
+    (undo s)
+    (check (get-value s "A1") 9))
+
+  ;; undo of a set-cells batch reverts every cell at once
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (set-cells s '(("A1" 2) ("A2" 3)))
+    (undo s)
+    (check (get-value s "A1") 1)                         ; A1 reverted
+    (multiple-value-bind (v e) (get-value s "A2")
+      (check v nil) (check e nil)))                      ; A2 (new) removed
+
   ;; set-cells: install a whole batch, then one sweep. Forward references
   ;; in any order resolve with no transient error; the return value is the
   ;; list of resulting values in input order; a later pair for a cell wins.

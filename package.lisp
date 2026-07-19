@@ -12,6 +12,8 @@
    #:set-cell #:set-cells #:clear-cell #:get-value #:get-formula
    ;; recalculation
    #:recalc #:recalc-all
+   ;; undo / redo
+   #:undo #:redo
    ;; cell classes (note: CELL the class shares its symbol with the CELL
    ;; formula reader, already exported below) and their extension points
    #:external-cell #:async-cell

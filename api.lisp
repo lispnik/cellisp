@@ -9,6 +9,54 @@
 AUDITED-MIXIN / edit provenance)."
   `(let ((*actor* ,actor)) ,@body))
 
+;;; --- undo / redo of formula edits -----------------------------------
+
+(defvar *recording* t
+  "When true, SET-CELL/SET-CELLS/CLEAR-CELL log an undo entry. Bound NIL while
+UNDO/REDO replay, so restoring doesn't itself record.")
+
+(defun capture-cells (sheet refs)
+  "Snapshot REFS as an alist (ref . formula-or-:absent)."
+  (loop for ref in refs
+        for cell = (find-cell sheet ref)
+        collect (cons ref (if cell (cell-formula cell) :absent))))
+
+(defun push-undo (sheet snapshot)
+  "Record SNAPSHOT as the next undo step and clear the redo stack (when
+recording)."
+  (when *recording*
+    (push snapshot (sheet-undo-stack sheet))
+    (setf (sheet-redo-stack sheet) '())))
+
+(defun restore-cells (sheet snapshot)
+  "Restore the formulas captured by CAPTURE-CELLS (absent cells are cleared).
+Runs with recording off, and batches the sets into one recompute sweep."
+  (let ((*recording* nil) (sets '()))
+    (dolist (entry snapshot)
+      (if (eq (cdr entry) :absent)
+          (clear-cell sheet (car entry))
+          (push (list (car entry) (cdr entry)) sets)))
+    (when sets (set-cells sheet (nreverse sets)))))
+
+(defun undo (sheet)
+  "Undo the last formula edit (SET-CELL/SET-CELLS/CLEAR-CELL). Returns T if one
+was undone, NIL if the undo stack was empty."
+  (with-sheet-lock (sheet)
+    (let ((entry (pop (sheet-undo-stack sheet))))
+      (when entry
+        (push (capture-cells sheet (mapcar #'car entry)) (sheet-redo-stack sheet))
+        (restore-cells sheet entry)
+        t))))
+
+(defun redo (sheet)
+  "Redo the last undone edit. Returns T if one was redone, else NIL."
+  (with-sheet-lock (sheet)
+    (let ((entry (pop (sheet-redo-stack sheet))))
+      (when entry
+        (push (capture-cells sheet (mapcar #'car entry)) (sheet-undo-stack sheet))
+        (restore-cells sheet entry)
+        t))))
+
 (defun set-cell (sheet designator formula &key (volatile nil volatile-supplied-p))
   "Store FORMULA in the cell at DESIGNATOR and recompute it together
 with everything (transitively) depending on it. Returns the new value
@@ -20,8 +68,10 @@ one recomputed on every recalc regardless of whether a precedent changed
 is explicitly passed, so re-setting a formula doesn't silently demote it."
   (with-sheet-lock (sheet)
     (let* ((ref (parse-ref designator))
+           (snapshot (capture-cells sheet (list ref)))   ; before ENSURE (:absent if new)
            (cell (ensure-cell sheet ref)))
       (unless (cell-writable-p cell formula) (error 'readonly-cell :ref ref))
+      (push-undo sheet snapshot)
       (note-set cell sheet ref formula *actor* (funcall *audit-clock*))
       (setf (cell-formula cell) formula)
       (when volatile-supplied-p
@@ -50,6 +100,8 @@ for a cell that errored). A later pair for the same cell wins."
              (existing (find-cell sheet ref)))
         (when (and existing (not (cell-writable-p existing (second pair))))
           (error 'readonly-cell :ref ref))))
+    (push-undo sheet (capture-cells sheet (mapcar (lambda (p) (parse-ref (first p)))
+                                                  bindings)))
     (let* ((time (funcall *audit-clock*))    ; one timestamp for the whole batch
            (refs (loop for (designator formula) in bindings
                        for ref = (parse-ref designator)
@@ -68,6 +120,7 @@ they still read it)."
            (cell (find-cell sheet ref)))
       (when cell
         (unless (cell-writable-p cell) (error 'readonly-cell :ref ref))
+        (push-undo sheet (capture-cells sheet (list ref)))
         (let ((deps (cell-dependents cell)))
           ;; detach from our precedents
           (dolist (p (cell-precedents cell))

@@ -66,6 +66,10 @@
   (frozen (make-hash-table :test 'equal) :type hash-table)
   ;; Named-cell aliases: upcased name string -> ref. RESOLVE-REF consults it.
   (names (make-hash-table :test 'equal) :type hash-table)
+  ;; Undo/redo of formula edits: each entry is a snapshot alist of
+  ;; (ref . formula-or-:absent) — the state to restore.
+  (undo-stack '() :type list)
+  (redo-stack '() :type list)
   ;; Serializes all public access to this sheet (see comment above).
   (lock (bt:make-recursive-lock "cellisp-sheet")))
 
