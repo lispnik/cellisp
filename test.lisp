@@ -15,6 +15,15 @@
 (defclass demo-mixin-a () ((xa :initform :a)))
 (defclass demo-mixin-b () ((xb :initform :b)))
 
+;; named functions for the symbol-referenced serialization test
+(defun ser-clamp (v) (min 100 (max 0 v)))
+(defun ser-even (v) (and (integerp v) (evenp v)))
+(defun ser-source () 7)
+(defvar *ser-sink* '())
+(defun ser-sink (v) (push v *ser-sink*))
+(defvar *ser-obs* '())
+(defun ser-obs (v) (push v *ser-obs*))
+
 (defmacro check (form expected &optional (test '#'equal))
   `(progn
      (incf *count*)
@@ -874,6 +883,35 @@
         (check (getf (first audit) :time) 42))
       (set-cell s2 "A1" 4)                                 ; restored mixin is live
       (check (cell-versions s2 "A1") '(1 2 3 4))))
+
+  ;; symbol-referenced config round-trips: NAMED functions for transform,
+  ;; validator, sink, observer, and external source survive and are live.
+  (let ((s1 (make-sheet)))
+    (set-transform s1 "A2" 'ser-clamp)
+    (set-validator s1 "A3" 'ser-even)
+    (set-persist s1 "A3" 'ser-sink)
+    (observe s1 "A3" 'ser-obs)
+    (set-external s1 "A4" 'ser-source)
+    (set-cells s1 '(("A1" 150) ("A2" (cell "A1")) ("A3" (cell "A1"))))
+    (let* ((text (with-output-to-string (o) (write-sheet s1 o)))
+           (s2 (with-input-from-string (i text) (read-sheet i))))
+      (check (get-value s2 "A2") 100)                      ; transform restored
+      (check (get-value s2 "A3") 150)                      ; validator ok (even)
+      (check (get-value s2 "A4") 7)                        ; external source restored
+      (setf *ser-sink* '() *ser-obs* '())
+      (set-cell s2 "A1" 42)                                ; A3 -> 42 (still even)
+      (check *ser-sink* '(42))                             ; sink fired
+      (check *ser-obs* '(42))))                            ; observer fired
+
+  ;; an anonymous (lambda) config is NOT serializable — it is skipped, so the
+  ;; reloaded cell computes without it (raw value).
+  (let ((s1 (make-sheet)))
+    (set-transform s1 "A2" (lambda (v) (* v 100)))         ; lambda, not a symbol
+    (set-cells s1 '(("A1" 3) ("A2" (cell "A1"))))
+    (check (get-value s1 "A2") 300)                        ; live: transformed
+    (let* ((text (with-output-to-string (o) (write-sheet s1 o)))
+           (s2 (with-input-from-string (i text) (read-sheet i))))
+      (check (get-value s2 "A2") 3)))                      ; reloaded: transform lost
 
   ;; save-sheet / load-sheet round-trip through an actual file
   (let ((path (merge-pathnames "cellisp-roundtrip-test.sheet"
