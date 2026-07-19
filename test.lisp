@@ -177,6 +177,41 @@ the invariant always held."
   ;; random acyclic sheets and edit sequences (guards the short-circuit).
   (check (property-incremental=full) t)
 
+  ;; explain-tree captures a cell's precedent structure and values
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10) (set-cell s "A2" 20)
+    (set-cell s "A3" '(+ (cell "A1") (cell "A2")))
+    (let ((tree (explain-tree s "A3")))
+      (check (getf tree :value) 30)
+      (check (getf tree :formula) '(+ (cell "A1") (cell "A2")))
+      (check (length (getf tree :precedents)) 2)
+      (let ((a1 (find-if (lambda (n) (string= (getf n :ref) "A1"))
+                         (getf tree :precedents))))
+        (check (and a1 t) t)
+        (check (getf a1 :value) 10))))
+
+  ;; explain-tree surfaces an error and follows it to the root cause
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1000)
+    (handler-case (set-cell s "A2" '(+ (cell "A1") (cell "Z9"))) (sheet-error () nil))
+    (handler-case (set-cell s "A3" '(* (cell "A2") 2)) (sheet-error () nil))
+    (let ((tree (explain-tree s "A3")))
+      (check (and (getf tree :error) t) t)             ; A3 errored
+      (let ((a2 (first (getf tree :precedents))))       ; via A2
+        (check (getf a2 :ref) "A2" #'string=)
+        (check (and (getf a2 :error) t) t)
+        (let ((z9 (find-if (lambda (n) (string= (getf n :ref) "Z9"))
+                           (getf a2 :precedents))))     ; root cause: empty Z9
+          (check (and z9 t) t)
+          (check (getf z9 :value) nil)))))
+
+  ;; explain prints a tree naming the cells involved (smoke test)
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 5)
+    (set-cell s "A2" '(* (cell "A1") 2))
+    (let ((out (with-output-to-string (o) (explain s "A2" o))))
+      (check (and (search "A2" out) (search "A1" out) t) t)))
+
   ;; insert-row shifts cells down and rewrites references to keep them valid
   (let ((s (make-sheet)))
     (set-cell s "A1" 10)

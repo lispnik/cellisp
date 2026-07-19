@@ -149,6 +149,22 @@ and out-of-band async deliveries from other threads are serialized.
 (copy-cell s "B1" "B2")              ; B2 becomes (* (cell "A2") 2)
 ```
 
+### Explaining a value
+
+`explain` prints a cell's precedent tree — how its value (or error) arises.
+Because a precedent's error propagates to the cells that read it, the tree
+pinpoints the root cause:
+
+```
+B1 = <error: Cell Z9 is empty>   (* (CELL "A3") TAX)
+└─ A3 = <error: Cell Z9 is empty>   (/ (CELL "A1") (CELL "Z9"))
+   ├─ A1 = 1000   1000
+   └─ Z9  <empty>
+```
+
+`explain-tree` returns the same information as a nested plist for programmatic
+use.
+
 ### Persistence
 
 `save-sheet` / `load-sheet` (and `write-sheet` / `read-sheet` for streams)

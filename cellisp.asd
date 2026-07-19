@@ -11,7 +11,8 @@
                (:file "api")
                (:file "taxonomy")
                (:file "serialize")
-               (:file "edit"))
+               (:file "edit")
+               (:file "explain"))
   :in-order-to ((test-op (test-op "cellisp/test"))))
 
 (defsystem "cellisp/test"

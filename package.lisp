@@ -44,6 +44,7 @@
    #:set-name #:remove-name #:name-ref
    ;; introspection
    #:dependents #:precedents #:map-cells #:volatile-refs
+   #:explain #:explain-tree
    ;; conditions
    #:sheet-error #:cyclic-reference #:cell-eval-error #:unbound-cell
    #:readonly-cell #:invalid-value
