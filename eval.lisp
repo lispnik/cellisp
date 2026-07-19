@@ -152,6 +152,11 @@ self-evaluate."
     (declare (ignore sheet ref))
     nil))
 
+(defgeneric cell-writable-p (cell)
+  (:documentation "True if the user API may reassign CELL's formula/value.
+Internal recomputation ignores this — it is a guard on the public mutators.")
+  (:method ((cell cell)) t))
+
 ;;; --- the recalculation core -----------------------------------------
 
 (defun evaluate-ref (sheet ref)

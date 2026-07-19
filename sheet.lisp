@@ -32,6 +32,11 @@
                      (ref-string (cell-eval-error-ref c))
                      (cell-eval-error-original c)))))
 
+(define-condition readonly-cell (sheet-error)
+  ((ref :initarg :ref :reader readonly-cell-ref))
+  (:report (lambda (c s)
+             (format s "Cell ~A is read-only" (ref-string (readonly-cell-ref c))))))
+
 ;;;; ------------------------------------------------------------------
 ;;;; Sheet
 ;;;; ------------------------------------------------------------------

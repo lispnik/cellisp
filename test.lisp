@@ -339,6 +339,44 @@
       (check (typep cell 'external-cell) t))              ; source preserved
     (check (get-value s "A1") 9))
 
+  ;; readonly-mixin: locks user reassignment, but the cell still recomputes
+  ;; from its precedents. SET-READONLY toggles it.
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 5)
+    (set-cell s "A2" '(* 2 (cell "A1")))
+    (set-readonly s "A2" t)
+    (check (typep (cellisp::find-cell s (parse-ref "A2")) 'readonly-mixin) t)
+    (check (cell-writable-p (cellisp::find-cell s (parse-ref "A2"))) nil)
+    (check-signals readonly-cell (set-cell s "A2" 99))    ; can't reassign
+    (check-signals readonly-cell (clear-cell s "A2"))     ; can't clear
+    (check (get-value s "A2") 10)                          ; unchanged
+    (set-cell s "A1" 7)                                    ; precedent changes
+    (check (get-value s "A2") 14)                          ; still recomputes
+    (set-readonly s "A2" nil)                              ; unlock
+    (set-cell s "A2" 99)                                   ; now allowed
+    (check (get-value s "A2") 99))
+
+  ;; TWO real mixins compose on one cell: readonly + observable, each guarding
+  ;; a different generic (cell-writable-p vs cell-swept).
+  (let ((s (make-sheet)) (log '()))
+    (set-cell s "A1" 1)
+    (set-cell s "A2" '(* 10 (cell "A1")))
+    (observe s "A2" (lambda (v) (push v log)))            ; observable
+    (set-readonly s "A2" t)                               ; + readonly
+    (let ((cell (cellisp::find-cell s (parse-ref "A2"))))
+      (check (typep cell 'observable-mixin) t)
+      (check (typep cell 'readonly-mixin) t))             ; both present
+    (check-signals readonly-cell (set-cell s "A2" 5))     ; readonly guards
+    (set-cell s "A1" 3)                                    ; recompute -> 30
+    (check (get-value s "A2") 30)
+    (check (first log) 30))                                ; observer still fires
+
+  ;; readonly also blocks changing a cell's value source
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (set-readonly s "A1" t)
+    (check-signals readonly-cell (set-external s "A1" (lambda () 9))))
+
   ;; live redefinition: adding a slot migrates existing instances — the CLOS
   ;; capability that motivates CELL being a class rather than a struct.
   (progn

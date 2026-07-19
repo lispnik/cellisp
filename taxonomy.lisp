@@ -64,12 +64,23 @@ sweep, on settled values — so observers never see diamond intermediates."))
       (setf (cell-last-notified cell) v)
       (dolist (fn (cell-subscribers cell)) (funcall fn v)))))
 
+;;; --- read-only mixin (overrides CELL-WRITABLE-P) --------------------
+
+(defclass readonly-mixin () ()
+  (:documentation "Mixin that locks a cell against user reassignment: SET-CELL,
+SET-CELLS, CLEAR-CELL, SET-EXTERNAL and SET-ASYNC signal READONLY-CELL. The
+cell still recomputes from its precedents (internal writes are not guarded),
+so a read-only formula cell tracks its inputs but its formula can't be edited.
+Dispatches on a different generic than OBSERVABLE-MIXIN, so the two compose."))
+
+(defmethod cell-writable-p ((cell readonly-mixin)) nil)
+
 ;;; --- composing value source + mixins --------------------------------
 
 (defparameter *value-source-classes* '(external-cell async-cell cell)
   "Value-source cell classes, most specific first; a cell has exactly one.")
 
-(defparameter *mixin-classes* '(observable-mixin)
+(defparameter *mixin-classes* '(observable-mixin readonly-mixin)
   "Known composable behavior mixins. Add a new cross-cutting axis by defining
 a mixin (overriding some generic) and listing it here.")
 
@@ -124,6 +135,7 @@ Returns the freshly computed value."
   (with-sheet-lock (sheet)
     (let* ((ref (parse-ref designator))
            (cell (ensure-cell sheet ref)))
+      (unless (cell-writable-p cell) (error 'readonly-cell :ref ref))
       (morph-cell cell 'external-cell (cell-mixins cell))
       (setf (cell-source cell) source)
       (recompute-closure sheet (list ref))
@@ -135,6 +147,7 @@ FETCHER and INITIAL value, preserving any mixins. Returns the initial value."
   (with-sheet-lock (sheet)
     (let* ((ref (parse-ref designator))
            (cell (ensure-cell sheet ref)))
+      (unless (cell-writable-p cell) (error 'readonly-cell :ref ref))
       (morph-cell cell 'async-cell (cell-mixins cell))
       (setf (async-fetcher cell) fetcher
             (async-pending cell) nil
@@ -178,6 +191,18 @@ so it composes with formula/external/async/observed cells alike."
   (with-sheet-lock (sheet)
     (set-cell-volatile sheet (parse-ref designator) volatile)
     volatile))
+
+(defun set-readonly (sheet designator readonly)
+  "Lock (or unlock) DESIGNATOR against user reassignment by adding/removing
+READONLY-MIXIN. Composes with any value source and other mixins; the cell
+still recomputes from its precedents while locked. This driver itself is the
+escape hatch and is never blocked."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (if readonly
+          (add-mixin cell 'readonly-mixin)
+          (remove-mixin cell 'readonly-mixin)))
+    readonly))
 
 ;;; --- drivers: observation -------------------------------------------
 

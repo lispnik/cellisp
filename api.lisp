@@ -16,6 +16,7 @@ is explicitly passed, so re-setting a formula doesn't silently demote it."
   (with-sheet-lock (sheet)
     (let* ((ref (parse-ref designator))
            (cell (ensure-cell sheet ref)))
+      (unless (cell-writable-p cell) (error 'readonly-cell :ref ref))
       (setf (cell-formula cell) formula)
       (when volatile-supplied-p
         (set-cell-volatile sheet ref volatile))
@@ -37,6 +38,12 @@ its condition as usual (readable via GET-VALUE) and one broken cell does not
 abort the batch. Returns the list of resulting values in input order (NIL
 for a cell that errored). A later pair for the same cell wins."
   (with-sheet-lock (sheet)
+    ;; guard first: refuse the whole batch if any existing target is read-only
+    (dolist (pair bindings)
+      (let* ((ref (parse-ref (first pair)))
+             (existing (find-cell sheet ref)))
+        (when (and existing (not (cell-writable-p existing)))
+          (error 'readonly-cell :ref ref))))
     (let ((refs (loop for (designator formula) in bindings
                       for ref = (parse-ref designator)
                       do (setf (cell-formula (ensure-cell sheet ref)) formula)
@@ -51,6 +58,7 @@ they still read it)."
     (let* ((ref (parse-ref designator))
            (cell (find-cell sheet ref)))
       (when cell
+        (unless (cell-writable-p cell) (error 'readonly-cell :ref ref))
         (let ((deps (cell-dependents cell)))
           ;; detach from our precedents
           (dolist (p (cell-precedents cell))
