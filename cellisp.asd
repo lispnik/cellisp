@@ -10,7 +10,8 @@
                (:file "eval")
                (:file "api")
                (:file "taxonomy")
-               (:file "serialize"))
+               (:file "serialize")
+               (:file "edit"))
   :in-order-to ((test-op (test-op "cellisp/test"))))
 
 (defsystem "cellisp/test"

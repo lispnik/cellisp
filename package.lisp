@@ -35,6 +35,8 @@
    ;; serialization
    #:write-sheet #:read-sheet #:save-sheet #:load-sheet
    #:sheet->form #:form->sheet
+   ;; structural editing
+   #:insert-row #:delete-row #:insert-column #:delete-column
    ;; introspection
    #:dependents #:precedents #:map-cells #:volatile-refs
    ;; conditions

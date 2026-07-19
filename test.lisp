@@ -155,6 +155,56 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
   ;; random acyclic sheets and edit sequences (guards the short-circuit).
   (check (property-incremental=full) t)
 
+  ;; insert-row shifts cells down and rewrites references to keep them valid
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10)
+    (set-cell s "A2" 20)
+    (set-cell s "A3" '(+ (cell "A1") (cell "A2")))       ; 30
+    (insert-row s 2)                                     ; blank row before row 2
+    (check (get-value s "A1") 10)                        ; above the insert: fixed
+    (check (get-value s "A2") nil)                       ; the new blank row
+    (check (get-value s "A3") 20)                        ; old A2 moved down
+    (check (get-formula s "A4") '(+ (cell "A1") (cell "A3")))  ; refs rewritten
+    (check (get-value s "A4") 30))                       ; and still correct
+
+  ;; delete-row shifts up; a reference to the deleted row becomes #REF! (errors)
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10)
+    (set-cell s "A2" 20)
+    (set-cell s "A3" '(* (cell "A2") 2))                 ; reads the doomed A2
+    (set-cell s "A4" '(cell "A1"))                       ; reads A1 (safe)
+    (delete-row s 2)                                     ; remove row 2
+    (check (get-value s "A1") 10)
+    (check (and (nth-value 1 (get-value s "A2")) t) t)   ; old A3 -> #REF! error
+    (check (get-value s "A3") 10))                       ; old A4, still reads A1
+
+  ;; insert-column shifts columns right and rewrites references
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 5)
+    (set-cell s "B1" '(* (cell "A1") 3))                 ; 15
+    (insert-column s 1)                                  ; blank column before A
+    (check (get-value s "A1") nil)                       ; new blank column
+    (check (get-value s "B1") 5)                         ; old A1 moved right
+    (check (get-formula s "C1") '(* (cell "B1") 3))      ; refs rewritten
+    (check (get-value s "C1") 15))
+
+  ;; delete-column shifts left; references to the deleted column become #REF!
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 7)
+    (set-cell s "B1" '(+ (cell "A1") 1))                 ; reads doomed A1
+    (set-cell s "C1" 100)
+    (delete-column s 1)                                  ; remove column A
+    (check (and (nth-value 1 (get-value s "A1")) t) t)   ; old B1 -> #REF!
+    (check (get-value s "B1") 100))                      ; old C1 moved left
+
+  ;; a registry attribute (volatile) follows its cell across a structural edit
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (set-cell s "A2" 2 :volatile t)
+    (insert-row s 1)                                     ; everything shifts down
+    (check (volatile-p s "A3") t)                        ; volatile followed to A3
+    (check (volatile-p s "A2") nil))
+
   ;; set-cells: install a whole batch, then one sweep. Forward references
   ;; in any order resolve with no transient error; the return value is the
   ;; list of resulting values in input order; a later pair for a cell wins.
