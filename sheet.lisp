@@ -36,6 +36,12 @@
 ;;;; Sheet
 ;;;; ------------------------------------------------------------------
 
+;;; A sheet is NOT thread-safe: recalculation drives mutable state through
+;;; dynamic vars (*sheet*, *eval-stack*, *fresh*, *collected-precedents*)
+;;; and mutates the CELLS table plus per-cell adjacency lists in place, with
+;;; no locking. Confine all access to one sheet to a single thread, or wrap
+;;; the mutators (SET-CELL/SET-CELLS/CLEAR-CELL) and reads in your own lock.
+
 (defstruct (sheet (:constructor %make-sheet))
   ;; ref-cons -> cell. Refs are equal-comparable conses, so use EQUAL.
   (cells (make-hash-table :test 'equal) :type hash-table)

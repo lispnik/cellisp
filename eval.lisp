@@ -60,17 +60,29 @@ corner designators, row-major."
 ;;; --- aggregates -----------------------------------------------------
 
 (defun flatten-numbers (args)
+  "Collect every number in ARGS, descending into nested lists. Non-numeric
+values (strings, symbols, NIL) are dropped, so the aggregates below all
+operate on numbers only, spreadsheet-style."
   (loop for a in args
         append (cond ((null a) '())
                      ((listp a) (flatten-numbers a))
                      ((numberp a) (list a))
                      (t '()))))
 
-(defun sum (&rest args)     (reduce #'+ (flatten-numbers args) :initial-value 0))
-(defun cnt (&rest args)     (length (flatten-numbers args)))
+(defun sum (&rest args)
+  "Sum of every number in ARGS (non-numbers ignored). Empty -> 0."
+  (reduce #'+ (flatten-numbers args) :initial-value 0))
+(defun cnt (&rest args)
+  "Count of the numeric values in ARGS (non-numbers ignored)."
+  (length (flatten-numbers args)))
 (defun average (&rest args)
+  "Mean of the numbers in ARGS (non-numbers ignored). Signals SHEET-ERROR
+when there are no numbers, rather than dividing by zero (cf. #DIV/0)."
   (let ((ns (flatten-numbers args)))
-    (if ns (/ (reduce #'+ ns) (length ns)) 0)))
+    (if ns
+        (/ (reduce #'+ ns) (length ns))
+        (error 'sheet-error
+               :format-control "AVERAGE of no numeric values"))))
 
 ;;; --- dependency extraction ------------------------------------------
 ;;;
@@ -79,14 +91,18 @@ corner designators, row-major."
 ;;; refs correctly for the current state) and re-run on every recalc.
 
 (defun environment-bindings (sheet)
-  "Build a let-list from the sheet environment alist."
+  "Build a let-list from the sheet environment alist. Values are QUOTEd so
+they are treated as data, not spliced in as code to evaluate (a list or
+symbol value would otherwise be run as a form)."
   (loop for (name . val) in (sheet-environment sheet)
-        collect (list name val)))
+        collect (list name (list 'quote val))))
 
 (defun cell-thunk (cell sheet formula)
   "Return a compiled thunk for FORMULA under SHEET's environment, cached on
-CELL. Recompiles only when the formula changes; the environment is fixed
-per sheet, so formula identity (EQ) is a sufficient cache key."
+CELL. Recompiles only when the formula changes; the environment is assumed
+fixed for the life of the sheet, so formula identity (EQ) is a sufficient
+cache key. Mutating SHEET-ENVIRONMENT after a formula has been evaluated
+leaves cached thunks holding the old constants — don't."
   (unless (eq (cell-compiled-from cell) formula)
     (let ((bindings (environment-bindings sheet)))
       (setf (cell-compiled cell)

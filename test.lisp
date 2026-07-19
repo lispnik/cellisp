@@ -36,6 +36,10 @@
   (check-signals sheet-error (parse-ref "A1B"))
   (check-signals sheet-error (parse-ref "A1.5"))
   (check-signals sheet-error (parse-ref "12"))
+  ;; a cons designator is validated too: must be (non-neg-int . non-neg-int)
+  (check (parse-ref '(2 . 1)) '(2 . 1))
+  (check-signals sheet-error (parse-ref '(-1 . 2)))
+  (check-signals sheet-error (parse-ref '("a" . "b")))
 
   ;; literals and a simple formula
   (let ((s (make-sheet)))
@@ -93,6 +97,21 @@
     (set-cell s "A5" 95)
     (check (get-value s "B1") 105))
 
+  ;; aggregates ignore non-numeric cells; AVERAGE of no numbers signals.
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10)
+    (set-cell s "A2" "text")
+    (set-cell s "A3" 20)
+    (set-cell s "B1" '(sum (cells "A1" "A3")))
+    (set-cell s "B2" '(cnt (cells "A1" "A3")))
+    (set-cell s "B3" '(average (cells "A1" "A3")))
+    (check (get-value s "B1") 30)       ; "text" ignored
+    (check (get-value s "B2") 2)        ; two numeric values
+    (check (get-value s "B3") 15)       ; (10 + 20) / 2
+    (set-cell s "C1" "a")
+    (set-cell s "C2" "b")
+    (check-signals sheet-error (set-cell s "B4" '(average (cells "C1" "C2")))))
+
   ;; arbitrary Lisp in formulas
   (let ((s (make-sheet)))
     (set-cell s "A1" 16)
@@ -111,6 +130,14 @@
     (check (get-value s "A2") 50)
     (set-cell s "A2" '(+ (cell "A1") tax))   ; new formula -> recompiled
     (check (get-value s "A2") 5001/10))
+
+  ;; environment values that are not self-evaluating (lists, symbols) must
+  ;; be treated as data, not spliced into the compiled thunk as code.
+  (let ((s (make-sheet :environment '((names . ("ann" "bob")) (mode . active)))))
+    (set-cell s "A1" '(first names))
+    (set-cell s "A2" '(string mode))
+    (check (get-value s "A1") "ann" #'string=)
+    (check (get-value s "A2") "ACTIVE" #'string=))
 
   ;; cycle detection
   (let ((s (make-sheet)))

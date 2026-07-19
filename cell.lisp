@@ -37,7 +37,13 @@
 (defun parse-ref (designator)
   "Coerce DESIGNATOR (a ref cons or an A1 string/symbol) into a ref."
   (etypecase designator
-    (cons designator)
+    (cons
+     ;; a ref cons must be (non-negative-int . non-negative-int); reject a
+     ;; malformed cons at the boundary rather than let it fail deeper.
+     (unless (typep designator 'ref)
+       (error 'sheet-error :format-control "Malformed reference ~S"
+                           :format-arguments (list designator)))
+     designator)
     ((or string symbol)
      (let* ((s (string designator))
             (i 0) (len (length s)))
