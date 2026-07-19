@@ -16,11 +16,12 @@
    ;; formula reader, already exported below) and their extension points
    #:external-cell #:async-cell
    #:observable-mixin #:readonly-mixin #:logged-mixin #:cached-mixin
+   #:debounced-mixin
    #:compute-value #:cell-swept #:volatile-p #:cell-writable-p
    ;; cell-kind constructors / drivers
    #:set-external #:set-async #:refresh-async #:deliver-async
    #:set-volatile #:set-readonly #:set-logged #:cell-log #:set-cached
-   #:observe #:unobserve
+   #:observe #:unobserve #:debounce #:*debounce-delay*
    ;; concurrency
    #:with-sheet-lock
    ;; introspection

@@ -122,13 +122,52 @@ composition style — so it wraps whatever value source it is combined with."))
                                         (and c (cell-value c))))))
           v))))
 
+;;; --- debouncing mixin (coalesces bursts of changes) -----------------
+
+(defparameter *debounce-delay* 0.05
+  "Default debounce interval, in seconds, for DEFAULT-DEBOUNCE-SCHEDULER.")
+
+(defun default-debounce-scheduler (thunk)
+  "Run THUNK after *DEBOUNCE-DELAY* seconds on a background thread."
+  (bt:make-thread (lambda () (sleep *debounce-delay*) (funcall thunk))))
+
+(defclass debounced-mixin ()
+  ;; Slot names are prefixed so they never merge with another mixin's slot
+  ;; when the classes combine — e.g. OBSERVABLE-MIXIN also has a SUBSCRIBERS
+  ;; slot, and a shared slot would cross the two subscriber lists.
+  ((debounce-scheduler :initform #'default-debounce-scheduler
+                       :accessor debounce-scheduler)
+   (debounce-generation :initform 0 :accessor debounce-generation)
+   (debounce-last-seen :initform *unset* :accessor debounce-last-seen)
+   (debounce-subscribers :initform '() :accessor debounce-subscribers))
+  (:documentation "Mixin that coalesces a burst of value changes into a single
+trailing notification. Each change schedules a deferred fire (via SCHEDULER,
+which runs its thunk after the debounce interval) and bumps a generation
+counter; a scheduled fire runs only if no newer change arrived meanwhile. Like
+LOGGED-MIXIN it hooks CELL-SWEPT with an :AFTER, but it carries scheduler state
+and fires across threads under the sheet lock — the most stateful mixin."))
+
+(defmethod cell-swept :after ((cell debounced-mixin) sheet ref)
+  (declare (ignore ref))
+  (let ((v (cell-value cell)))
+    (unless (equal v (debounce-last-seen cell))
+      (setf (debounce-last-seen cell) v)
+      (let ((g (incf (debounce-generation cell))))
+        (funcall (debounce-scheduler cell)
+                 (lambda ()
+                   (with-sheet-lock (sheet)
+                     ;; fire only if this is still the latest change
+                     (when (= g (debounce-generation cell))
+                       (dolist (fn (debounce-subscribers cell))
+                         (funcall fn (cell-value cell)))))))))))
+
 ;;; --- composing value source + mixins --------------------------------
 
 (defparameter *value-source-classes* '(external-cell async-cell cell)
   "Value-source cell classes, most specific first; a cell has exactly one.")
 
 (defparameter *mixin-classes*
-  '(observable-mixin readonly-mixin logged-mixin cached-mixin)
+  '(observable-mixin readonly-mixin logged-mixin cached-mixin debounced-mixin)
   "Known composable behavior mixins. Add a new cross-cutting axis by defining
 a mixin (overriding some generic) and listing it here.")
 
@@ -281,6 +320,19 @@ value source or other mixin."
           (add-mixin cell 'cached-mixin)
           (remove-mixin cell 'cached-mixin)))
     cached))
+
+(defun debounce (sheet designator callback
+                 &key (scheduler #'default-debounce-scheduler))
+  "Subscribe CALLBACK to DESIGNATOR's value, but coalesce bursts: it fires
+once, with the settled value, after changes stop — each change (re)schedules
+the fire via SCHEDULER (a function of a thunk that runs it after the debounce
+interval). Promotes the cell to carry DEBOUNCED-MIXIN."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (add-mixin cell 'debounced-mixin)
+      (setf (debounce-scheduler cell) scheduler)
+      (pushnew callback (debounce-subscribers cell))
+      (values))))
 
 ;;; --- drivers: observation -------------------------------------------
 

@@ -454,6 +454,47 @@
     (check (get-value s "A2") 30)
     (check (first log) 30))
 
+  ;; debounced-mixin: a burst of changes coalesces into ONE trailing fire of
+  ;; the settled value. Injected scheduler queues thunks so we settle by hand.
+  (let ((s (make-sheet)) (fired '()) (pending '()))
+    (set-cell s "A1" 0)
+    (set-cell s "A2" '(* 10 (cell "A1")))
+    (debounce s "A2" (lambda (v) (push v fired))
+              :scheduler (lambda (thunk) (push thunk pending)))
+    (set-cell s "A1" 1)                    ; A2 -> 10, deferred fire #1
+    (set-cell s "A1" 2)                    ; A2 -> 20, deferred fire #2
+    (set-cell s "A1" 3)                    ; A2 -> 30, deferred fire #3
+    (check (length pending) 3)             ; three fires queued
+    (check fired '())                      ; none fired yet (all deferred)
+    (dolist (th (reverse pending)) (funcall th))  ; settle: run them in order
+    (check fired '(30)))                    ; only the latest generation fired
+
+  ;; debounced fire arriving on a real worker thread, serialized by the lock
+  (let ((s (make-sheet)) (fired '()) (th nil))
+    (set-cell s "A1" 1)
+    (set-cell s "A2" '(* 10 (cell "A1")))
+    (debounce s "A2" (lambda (v) (push v fired))
+              :scheduler (lambda (thunk) (setf th (bt:make-thread thunk))))
+    (set-cell s "A1" 5)                    ; A2 -> 50, fires on the worker
+    (bt:join-thread th)
+    (check (first fired) 50))
+
+  ;; observe + debounce on one cell keep SEPARATE subscriber lists (mixin
+  ;; slots must not merge): the observer fires immediately each change while
+  ;; the debounced notification stays deferred and coalesced.
+  (let ((s (make-sheet)) (obs '()) (deb '()) (queue '()))
+    (set-cell s "A1" 0)
+    (set-cell s "A2" '(* 10 (cell "A1")))
+    (observe s "A2" (lambda (v) (push v obs)))
+    (debounce s "A2" (lambda (v) (push v deb))
+              :scheduler (lambda (th) (push th queue)))
+    (set-cell s "A1" 1)
+    (set-cell s "A1" 2)
+    (check obs '(20 10))                   ; observer fired on both changes
+    (check deb '())                        ; debounced fired nothing yet
+    (dolist (th (reverse queue)) (funcall th))
+    (check deb '(20)))                      ; debounced fired once, settled value
+
   ;; live redefinition: adding a slot migrates existing instances — the CLOS
   ;; capability that motivates CELL being a class rather than a struct.
   (progn
