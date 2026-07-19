@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.lisp }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lisp: [sbcl, ecl]        # both verified locally; the code is portable
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ${{ matrix.lisp }}
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.lisp }}
+
+      - name: Download Quicklisp
+        run: curl -sSL https://beta.quicklisp.org/quicklisp.lisp -o /tmp/quicklisp.lisp
+
+      - name: Register the project with ASDF
+        run: |
+          mkdir -p ~/quicklisp/local-projects
+          ln -s "$GITHUB_WORKSPACE" ~/quicklisp/local-projects/cellisp
+
+      - name: Install Quicklisp and run the test suite
+        run: >
+          ${{ matrix.lisp }}
+          --load /tmp/quicklisp.lisp
+          --eval '(quicklisp-quickstart:install)'
+          --load "$GITHUB_WORKSPACE/.github/run-tests.lisp"

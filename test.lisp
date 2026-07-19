@@ -496,8 +496,8 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (set-external s "A1" (lambda () feed))
     (observe s "A1" (lambda (v) (push v log)))
     (let ((cell (cellisp::find-cell s (parse-ref "A1"))))
-      (check (typep cell 'observable-mixin) t)             ; observation added
-      (check (typep cell 'external-cell) t))               ; source preserved
+      (check (and (typep cell 'observable-mixin) t) t)             ; observation added
+      (check (and (typep cell 'external-cell) t) t))               ; source preserved
     (recalc s "A1") (check (first log) 5)                   ; sweep -> first notify
     (setf feed 8) (recalc s "A1")
     (check (get-value s "A1") 8)                            ; still external
@@ -509,8 +509,8 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (set-volatile s "A1" t)                                 ; recompute cadence
     (observe s "A1" (lambda (v) (push v log)))              ; notification
     (let ((cell (cellisp::find-cell s (parse-ref "A1"))))
-      (check (typep cell 'external-cell) t)
-      (check (typep cell 'observable-mixin) t)
+      (check (and (typep cell 'external-cell) t) t)
+      (check (and (typep cell 'observable-mixin) t) t)
       (check (volatile-p s "A1") t))
     (let ((before (length log)))
       (recalc-all s)                                        ; volatile -> re-pulls
@@ -522,7 +522,7 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (set-cell s "A1" 5)
     (set-cell s "A2" '(* 2 (cell "A1")))
     (observe s "A2" (lambda (v) (declare (ignore v))))   ; plain -> observable
-    (check (typep (cellisp::find-cell s (parse-ref "A2")) 'observable-mixin) t)
+    (check (and (typep (cellisp::find-cell s (parse-ref "A2")) 'observable-mixin) t) t)
     (check (get-value s "A2") 10)                          ; value survived
     (check (and (member (parse-ref "A1") (precedents s "A2") :test 'equal) t) t)
     (set-cell s "A1" 7)
@@ -538,10 +538,10 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
              'cell '(observable-mixin demo-mixin-b demo-mixin-a))))
     (check (eq c1 c2) t)                                   ; permutation -> one class
     (let ((inst (make-instance c1)))
-      (check (typep inst 'demo-mixin-a) t)
-      (check (typep inst 'demo-mixin-b) t)
-      (check (typep inst 'observable-mixin) t)
-      (check (typep inst 'cell) t)))
+      (check (and (typep inst 'demo-mixin-a) t) t)
+      (check (and (typep inst 'demo-mixin-b) t) t)
+      (check (and (typep inst 'observable-mixin) t) t)
+      (check (and (typep inst 'cell) t) t)))
 
   ;; a value-source change PRESERVES existing mixins: observe a plain cell,
   ;; then make it external — it stays observable and becomes external.
@@ -550,8 +550,8 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (observe s "A1" (lambda (v) (push v log)))            ; observable + cell
     (set-external s "A1" (lambda () feed))                ; -> observable + external
     (let ((cell (cellisp::find-cell s (parse-ref "A1"))))
-      (check (typep cell 'observable-mixin) t)            ; mixin kept
-      (check (typep cell 'external-cell) t))              ; source changed
+      (check (and (typep cell 'observable-mixin) t) t)            ; mixin kept
+      (check (and (typep cell 'external-cell) t) t))              ; source changed
     (recalc s "A1")
     (check (get-value s "A1") 3)
     (check (first log) 3))                                 ; still notifies
@@ -561,11 +561,11 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
   (let ((s (make-sheet)) (cb (lambda (v) (declare (ignore v)))))
     (set-external s "A1" (lambda () 9))
     (observe s "A1" cb)
-    (check (typep (cellisp::find-cell s (parse-ref "A1")) 'observable-mixin) t)
+    (check (and (typep (cellisp::find-cell s (parse-ref "A1")) 'observable-mixin) t) t)
     (unobserve s "A1" cb)
     (let ((cell (cellisp::find-cell s (parse-ref "A1"))))
       (check (typep cell 'observable-mixin) nil)          ; mixin removed
-      (check (typep cell 'external-cell) t))              ; source preserved
+      (check (and (typep cell 'external-cell) t) t))              ; source preserved
     (check (get-value s "A1") 9))
 
   ;; readonly-mixin: locks user reassignment, but the cell still recomputes
@@ -574,7 +574,7 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (set-cell s "A1" 5)
     (set-cell s "A2" '(* 2 (cell "A1")))
     (set-readonly s "A2" t)
-    (check (typep (cellisp::find-cell s (parse-ref "A2")) 'readonly-mixin) t)
+    (check (and (typep (cellisp::find-cell s (parse-ref "A2")) 'readonly-mixin) t) t)
     (check (cell-writable-p (cellisp::find-cell s (parse-ref "A2"))) nil)
     (check-signals readonly-cell (set-cell s "A2" 99))    ; can't reassign
     (check-signals readonly-cell (clear-cell s "A2"))     ; can't clear
@@ -593,8 +593,8 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (observe s "A2" (lambda (v) (push v log)))            ; observable
     (set-readonly s "A2" t)                               ; + readonly
     (let ((cell (cellisp::find-cell s (parse-ref "A2"))))
-      (check (typep cell 'observable-mixin) t)
-      (check (typep cell 'readonly-mixin) t))             ; both present
+      (check (and (typep cell 'observable-mixin) t) t)
+      (check (and (typep cell 'readonly-mixin) t) t))             ; both present
     (check-signals readonly-cell (set-cell s "A2" 5))     ; readonly guards
     (set-cell s "A1" 3)                                    ; recompute -> 30
     (check (get-value s "A2") 30)
@@ -624,8 +624,8 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (observe s "A2" (lambda (v) (push v log)))   ; primary cell-swept
     (set-logged s "A2" t)                        ; :after cell-swept
     (let ((cell (cellisp::find-cell s (parse-ref "A2"))))
-      (check (typep cell 'observable-mixin) t)
-      (check (typep cell 'logged-mixin) t))
+      (check (and (typep cell 'observable-mixin) t) t)
+      (check (and (typep cell 'logged-mixin) t) t))
     (set-cell s "A1" 4)                          ; A2 -> 40
     (check (first log) 40)                        ; observer fired
     (check (cell-log s "A2") '(40)))              ; logger recorded
@@ -639,9 +639,9 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (set-readonly s "A1" t)
     (set-logged s "A1" t)
     (let ((c (cellisp::find-cell s (parse-ref "A1"))))
-      (check (typep c 'observable-mixin) t)
-      (check (typep c 'readonly-mixin) t)
-      (check (typep c 'logged-mixin) t))
+      (check (and (typep c 'observable-mixin) t) t)
+      (check (and (typep c 'readonly-mixin) t) t)
+      (check (and (typep c 'logged-mixin) t) t))
     (check-signals readonly-cell (set-cell s "A1" 0))   ; readonly guards
     (set-cell s "B1" 2)                                 ; A1 -> 200 (recompute)
     (check (first log) 200)                              ; observer fired
@@ -938,7 +938,7 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (set-cell s "A1" 5)                                 ; odd -> validation fails
     (multiple-value-bind (v e) (get-value s "A2")
       (check v nil)
-      (check (typep e 'invalid-value) t))
+      (check (and (typep e 'invalid-value) t) t))
     (check *ccount* 2)                                  ; missed cache, computed once
     (set-cell s "A1" 8)                                 ; even again
     (check (get-value s "A2") 8) (check *ccount* 3))    ; invalid was not cached
@@ -1027,9 +1027,9 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (observe s "A2" (lambda (v) (push v seen)))
     (set-stats s "A2" t)
     (let ((c (cellisp::find-cell s (parse-ref "A2"))))
-      (check (typep c 'transformed-mixin) t)
-      (check (typep c 'observable-mixin) t)
-      (check (typep c 'stats-mixin) t))
+      (check (and (typep c 'transformed-mixin) t) t)
+      (check (and (typep c 'observable-mixin) t) t)
+      (check (and (typep c 'stats-mixin) t) t))
     (set-cell s "A1" 3)                          ; A2 = 9 (squared)
     (check (get-value s "A2") 9)
     (check (first seen) 9)
@@ -1223,8 +1223,8 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
           (setf (getf pl :formula) '(+ (cell "B1") 1))))
       (let ((s2 (form->sheet form)))                      ; must not crash
         (check (get-value s2 "A1") 1000)                  ; unrelated cells fine
-        (check (typep (nth-value 1 (get-value s2 "A3")) 'cyclic-reference) t)
-        (check (typep (nth-value 1 (get-value s2 "B1")) 'cyclic-reference) t)
+        (check (and (typep (nth-value 1 (get-value s2 "A3")) 'cyclic-reference) t) t)
+        (check (and (typep (nth-value 1 (get-value s2 "B1")) 'cyclic-reference) t) t)
         (set-cell s2 "A3" '(- (cell "A1") (cell "A2")))   ; break the cycle
         (check (get-value s2 "A3") 700)                   ; recovered
         (check (get-value s2 "B1") 70))))                 ; dependent recovered
@@ -1242,8 +1242,8 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
           (setf (getf pl :formula) '(+ (cell "A1") (cell "Z9")))))
       (let ((s2 (form->sheet form)))
         (check (get-value s2 "A1") 1000)                  ; unrelated cells fine
-        (check (typep (nth-value 1 (get-value s2 "A3")) 'unbound-cell) t)
-        (check (typep (nth-value 1 (get-value s2 "B1")) 'unbound-cell) t)
+        (check (and (typep (nth-value 1 (get-value s2 "A3")) 'unbound-cell) t) t)
+        (check (and (typep (nth-value 1 (get-value s2 "B1")) 'unbound-cell) t) t)
         (set-cell s2 "Z9" 500)                            ; supply the missing cell
         (check (get-value s2 "A3") 1500)                  ; recovered (1000 + 500)
         (check (get-value s2 "B1") 150))))                ; dependent recovered
