@@ -51,23 +51,45 @@ that frequently leave a value unchanged, exercising the short-circuit."
           (3 `(max ,(e) ,(e)))
           (4 `(min ,(e) ,(e)))
           (t `(mod (abs ,(e)) 4))))))
-(defun values-vector (s n)
-  (loop for i from 1 to n collect (get-value s (cref i))))
+(defun cells-snapshot (s)
+  "An EQUAL-comparable snapshot of every cell: ref -> (value . error-present).
+The error object itself is reduced to a boolean, since RECALC-ALL creates fresh
+condition instances that wouldn't be EQUAL."
+  (let ((acc '()))
+    (map-cells (lambda (ref cell)
+                 (declare (ignore cell))
+                 (multiple-value-bind (v e) (get-value s (ref-string ref))
+                   (push (cons ref (cons v (and e t))) acc)))
+               s)
+    (sort acc #'string< :key (lambda (e) (ref-string (car e))))))
+(defun random-op (s n)
+  "Apply one random editing operation to S (cells A1..A<n> plus whatever
+structural edits have grown). Every operation keeps the graph acyclic. A
+SET-CELL/COPY-CELL whose formula reads an empty cell re-signals that cell's own
+error — a legitimate state (also produced by RECALC-ALL) — so it is swallowed."
+  (handler-case
+      (case (nextr 10)
+        ((0 1 2 3 4) (let ((i (1+ (nextr n)))) (set-cell s (cref i) (rand-formula i))))
+        (5 (insert-row s (1+ (nextr n))))
+        (6 (delete-row s (1+ (nextr n))))
+        ;; copy preserves acyclicity: a relative ref (< src) shifts to (< dst)
+        (7 (copy-cell s (cref (1+ (nextr n))) (cref (1+ (nextr n)))))
+        (t (undo s)))
+    (sheet-error () nil)))
 (defun property-incremental=full (&key (trials 40) (n 12) (edits 50) (seed 1))
-  "Run random trials; after each incremental edit assert the sheet's values
-equal a full RECALC-ALL. Returns T iff the invariant always held."
+  "Run random trials mixing formula edits, insert/delete row, copy, and undo;
+after each op assert the sheet's values equal a full RECALC-ALL. Returns T iff
+the invariant always held."
   (setf *prng* seed)
   (dotimes (tr trials t)
     (let ((s (make-sheet)))
       (loop for i from 1 to n do (set-cell s (cref i) (rand-formula i)))
       (dotimes (e edits)
-        (let ((i (1+ (nextr n))))
-          (set-cell s (cref i) (rand-formula i)))  ; one incremental edit
-        (let ((before (values-vector s n)))
+        (random-op s n)
+        (let ((before (cells-snapshot s)))
           (recalc-all s)                           ; full recompute (the oracle)
-          (unless (equal before (values-vector s n))
-            (format t "~&property violation (trial ~D, edit ~D):~%  incremental ~S~%  full        ~S~%"
-                    tr e before (values-vector s n))
+          (unless (equal before (cells-snapshot s))
+            (format t "~&property violation (trial ~D, edit ~D)~%" tr e)
             (return-from property-incremental=full nil)))))))
 
 (defmacro check (form expected &optional (test '#'equal))
