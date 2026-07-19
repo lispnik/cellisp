@@ -41,6 +41,18 @@ short-circuit so an edit only recomputes what actually changed.
 sbcl --eval '(asdf:test-system "cellisp")' --quit
 ```
 
+## Benchmark
+
+`bench.lisp` is a standing performance harness (separate from the test suite). It
+prints a timing table and, notably, measures the change-propagation
+short-circuit's payoff directly — the same edits recompute a whole dependent cone
+or prune it entirely:
+
+```bash
+sbcl --script bench.lisp        # or:  ecl --load bench.lisp
+sbcl --script bench.lisp 4      # optional scale factor grows every workload
+```
+
 ## Guide
 
 ### Formulas, references, and the environment

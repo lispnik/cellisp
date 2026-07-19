@@ -28,6 +28,8 @@ The project must be visible to ASDF (e.g. symlinked into `~/quicklisp/local-proj
 
 Tests are a hand-rolled harness in `test.lisp` — no external test framework. `run-tests` prints `N checks, M failures.` and signals an `error` if any check fails. There is no per-test runner; add a `check`/`check-signals` form to `run-tests` to test one thing. There is also a **property-based** check, `property-incremental=full`: over many random acyclic sheets and edit sequences — mixing formula edits, `insert-row`/`delete-row`, `copy-cell`, and `undo` (a deterministic LCG, so failures reproduce) — it asserts the invariant that the sheet's values always equal a full `recalc-all`. This guards the propagation short-circuit and that every editing operation leaves the sheet consistent.
 
+`bench.lisp` is a standalone performance harness (not part of `test-system`): `sbcl --script bench.lisp [scale]` loads the system and prints a timing table, including a direct before/after measurement of the propagation short-circuit (same edits, pruned cone vs. full propagate).
+
 ## Architecture
 
 Files load in the `:serial t` order declared in `cellisp.asd`: `package` → `cell` → `sheet` → `eval` → `api` → `taxonomy` → `serialize` → `edit` → `explain`. Everything is in the single `#:cellisp` package (nickname `#:sheet`). The system depends on `bordeaux-threads` (per-sheet locking).
