@@ -106,11 +106,15 @@ they still read it)."
 ;;;; ------------------------------------------------------------------
 ;;;; Recomputation strategy
 ;;;;
-;;;; When a set of seed cells change, recompute them and their transitive
-;;;; dependents. We compute each in dependency order via DFS over the
-;;;; dependent graph; EVALUATE-REF itself pulls precedents on demand, so
-;;;; a simple "recompute each affected cell" pass converges as long as we
-;;;; clear caches first. Cycle detection lives in EVALUATE-REF.
+;;;; When seed cells change, recompute them and the parts of their dependent
+;;;; cone that actually change. AFFECTED-CLOSURE collects the whole cone;
+;;;; TOPOLOGICAL-ORDER puts precedents before dependents; RECOMPUTE-CLOSURE
+;;;; then walks that order and recomputes a cell only if it is a seed/volatile
+;;;; or one of its precedents changed value (tracked in *CHANGED* by
+;;;; COMPUTE-CELL). A cell that recomputes to an unchanged value does not
+;;;; propagate, so its subtree is short-circuited. EVALUATE-REF still pulls
+;;;; precedents on demand, so out-of-order reads stay correct; cells outside
+;;;; the closure can't have changed (their precedents are stable).
 ;;;; ------------------------------------------------------------------
 
 (defun affected-closure (sheet seeds)
@@ -127,31 +131,59 @@ they still read it)."
       (dolist (s seeds) (visit s)))
     order))
 
+(defun topological-order (sheet refs)
+  "Order the cells in REFS so each comes after its precedents that are also in
+REFS (DFS post-order over the precedent edges; back-edges from cycles are left
+in arrival order)."
+  (let ((in-set (make-hash-table :test 'equal))
+        (state (make-hash-table :test 'equal))   ; nil | :open | :done
+        (order '()))
+    (dolist (r refs) (setf (gethash r in-set) t))
+    (labels ((visit (ref)
+               (case (gethash ref state)
+                 ((:done :open))                  ; done, or a cycle back-edge
+                 (t (setf (gethash ref state) :open)
+                    (let ((cell (find-cell sheet ref)))
+                      (when cell
+                        (dolist (p (cell-precedents cell))
+                          (when (gethash p in-set) (visit p)))))
+                    (setf (gethash ref state) :done)
+                    (push ref order)))))
+      (dolist (r refs) (visit r)))
+    (nreverse order)))
+
 (defun recompute-closure (sheet seeds)
-  "Recompute SEEDS and their dependents. EVALUATE-REF resolves ordering
-by pulling precedents, so we just force each affected cell once. Volatile
-cells are folded into the seed set so they (and their dependents) recompute
-on every sweep even when none of their precedents changed."
+  "Recompute SEEDS and the changed part of their dependent cone. Volatile cells
+are folded into the seeds so they refresh every sweep."
   (let* ((*sheet* sheet)
          (*fresh* (make-hash-table :test 'equal))
-         (refs (affected-closure sheet (append seeds (volatile-refs sheet)))))
-    (dolist (ref refs)
+         (*changed* (make-hash-table :test 'equal))
+         (all-seeds (append seeds (volatile-refs sheet)))
+         (seed-set (make-hash-table :test 'equal))
+         (ordered (topological-order sheet (affected-closure sheet all-seeds)))
+         (skipped (make-hash-table :test 'equal)))
+    (dolist (s all-seeds) (setf (gethash s seed-set) t))
+    (dolist (ref ordered)
       (let ((cell (find-cell sheet ref)))
-        ;; skip cells already (re)computed this sweep by an earlier cell
-        ;; pulling them as a precedent — each cell computes at most once.
         (when (and cell (not (gethash ref *fresh*)))
-          (handler-case (compute-cell sheet ref cell)
-            ;; errors are stored on the cell by COMPUTE-CELL; swallow here
-            ;; so one broken cell doesn't abort the whole sweep.
-            (sheet-error () nil)))))
-    ;; sweep settled: notify each computed cell (observed cells fire here).
-    ;; Skip cells that errored this sweep — they have no settled value for the
-    ;; :after CELL-SWEPT sinks (observe/log/persist/…) to record or emit.
+          (if (or (gethash ref seed-set)
+                  (some (lambda (p) (gethash p *changed*)) (cell-precedents cell)))
+              ;; a seed, or an input changed: recompute (COMPUTE-CELL records
+              ;; into *CHANGED* whether the output actually changed).
+              (handler-case (compute-cell sheet ref cell)
+                (sheet-error () nil))
+              ;; inputs unchanged: skip recompute but mark up to date so a
+              ;; later reader reuses the value instead of recomputing.
+              (progn (setf (gethash ref *fresh*) t)
+                     (setf (gethash ref skipped) t))))))
+    ;; sweep settled: notify each *recomputed* (fresh, not skipped), non-errored
+    ;; cell — skipped cells didn't change, so their :after sinks stay quiet.
     (maphash (lambda (ref present)
                (declare (ignore present))
-               (let ((cell (find-cell sheet ref)))
-                 (when (and cell (null (cell-err cell)))
-                   (cell-swept cell sheet ref))))
+               (unless (gethash ref skipped)
+                 (let ((cell (find-cell sheet ref)))
+                   (when (and cell (null (cell-err cell)))
+                     (cell-swept cell sheet ref)))))
              *fresh*)))
 
 (defun recalc (sheet designator)

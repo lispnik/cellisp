@@ -91,6 +91,21 @@
     (check *evals* 1)                    ; not 2+ (once per reader) or more
     (check (get-value s "C1") 10))
 
+  ;; propagation short-circuit: a cell that recomputes to an UNCHANGED value
+  ;; does not re-run its dependents; a changed value does.
+  (let ((s (make-sheet)))
+    (setf *evals* 0)
+    (set-cell s "A1" 5)
+    (set-cell s "A2" '(if (> (cell "A1") 0) 1 -1))          ; sign of A1
+    (set-cell s "A3" '(progn (incf *evals*) (* 10 (cell "A2"))))
+    (let ((n *evals*))
+      (set-cell s "A1" 8)               ; A1 changes, but A2 (sign) stays 1
+      (check (get-value s "A3") 10)     ; A3 value unchanged
+      (check *evals* n)                 ; ...and A3 was NOT recomputed
+      (set-cell s "A1" -3)              ; now A2 flips to -1
+      (check (get-value s "A3") -10)    ; A3 recomputed
+      (check (> *evals* n) t)))
+
   ;; set-cells: install a whole batch, then one sweep. Forward references
   ;; in any order resolve with no transient error; the return value is the
   ;; list of resulting values in input order; a later pair for a cell wins.

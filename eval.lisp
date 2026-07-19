@@ -26,6 +26,10 @@
 (defvar *fresh* nil
   "When bound (a hash-table) for the duration of one recompute sweep, holds
 the refs already computed this sweep so each cell is computed at most once.")
+(defvar *changed* nil
+  "When bound (a hash-table) for a sweep, COMPUTE-CELL records refs whose
+value/error actually changed — RECOMPUTE-CLOSURE uses this to short-circuit
+recompute of subtrees whose inputs did not change.")
 (defvar *actor* nil
   "Identity of whoever is making the current mutation, recorded by
 AUDITED-MIXIN. Bind it with WITH-ACTOR.")
@@ -206,7 +210,9 @@ cells read by a formula."
   (when (gethash ref (sheet-frozen sheet))
     (return-from compute-cell (cell-value cell)))
   (let ((*eval-stack* (cons ref *eval-stack*))
-        (*collected-precedents* (make-hash-table :test 'equal)))
+        (*collected-precedents* (make-hash-table :test 'equal))
+        (old-value (cell-value cell))
+        (old-err-p (and (cell-err cell) t)))
     ;; Commit the freshly observed precedents and back-links even when the
     ;; formula errors: the refs it touched before failing are already in
     ;; *collected-precedents*, and a dependent that dropped out of the
@@ -226,7 +232,12 @@ cells read by a formula."
       (update-dependency-links sheet ref cell *collected-precedents*)
       ;; mark computed-this-sweep (success or stored error) so readers and
       ;; the recompute loop reuse the result instead of recomputing.
-      (when *fresh* (setf (gethash ref *fresh*) t)))
+      (when *fresh* (setf (gethash ref *fresh*) t))
+      ;; record whether the output changed, for propagation short-circuiting.
+      (when (and *changed*
+                 (not (and (equal old-value (cell-value cell))
+                           (eq old-err-p (and (cell-err cell) t)))))
+        (setf (gethash ref *changed*) t)))
     (cell-value cell)))
 
 (defun update-dependency-links (sheet ref cell new-precedents-table)
