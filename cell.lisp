@@ -74,17 +74,30 @@
 ;;;; Cell
 ;;;; ------------------------------------------------------------------
 
-(defstruct (cell (:constructor %make-cell))
-  ;; The stored formula: either a literal (number/string/etc.) or a Lisp form.
-  (formula nil)
-  ;; Cached computed value.
-  (value nil)
-  ;; If evaluation failed, the condition is stored here (value is then nil).
-  (err nil)
-  ;; Refs this cell reads (its precedents) and refs that read it (dependents).
-  (precedents '() :type list)
-  (dependents '() :type list)
-  ;; Compiled-thunk cache for the environment eval path: COMPILED is the
-  ;; function compiled from the formula in COMPILED-FROM (compared by EQ).
-  (compiled nil :type (or null function))
-  (compiled-from nil))
+(defclass cell ()
+  (;; The stored formula: either a literal (number/string/etc.) or a Lisp form.
+   (formula :initform nil :accessor cell-formula :initarg :formula)
+   ;; Cached computed value.
+   (value :initform nil :accessor cell-value)
+   ;; If evaluation failed, the condition is stored here (value is then nil).
+   (err :initform nil :accessor cell-err)
+   ;; Refs this cell reads (its precedents) and refs that read it (dependents).
+   (precedents :initform '() :accessor cell-precedents :type list)
+   (dependents :initform '() :accessor cell-dependents :type list)
+   ;; Compiled-thunk cache for the environment eval path: COMPILED is the
+   ;; function compiled from the formula in COMPILED-FROM (compared by EQ).
+   (compiled :initform nil :accessor cell-compiled :type (or null function))
+   (compiled-from :initform nil :accessor cell-compiled-from))
+  (:documentation "A spreadsheet cell: cached value/error plus the dependency
+back-links and the compiled-thunk cache."))
+
+(defclass volatile-cell (cell) ()
+  (:documentation "A cell that must recompute on every recalc regardless of
+whether any precedent changed — the model for spreadsheet volatile functions
+like RAND() or NOW(). It adds no slots; it exists purely so behavior can be
+dispatched on the cell's class instead of a per-cell flag and a branch."))
+
+(defgeneric volatile-p (cell)
+  (:documentation "True if CELL recomputes on every recalc.")
+  (:method ((c cell)) nil)
+  (:method ((c volatile-cell)) t))

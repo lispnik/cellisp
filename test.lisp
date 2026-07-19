@@ -6,6 +6,8 @@
 (defvar *fails* 0)
 (defvar *count* 0)
 (defvar *evals* 0)   ; counts formula-body evaluations, for the dedup test
+(defvar *vcount* 0)  ; volatile-cell recompute counter
+(defvar *pcount* 0)  ; plain-cell recompute counter (contrast)
 
 (defmacro check (form expected &optional (test '#'equal))
   `(progn
@@ -119,6 +121,30 @@
     (set-cell s "A3" '(if (> (cell "A1") 10) "big" "small"))
     (check (get-value s "A2") 4)
     (check (get-value s "A3") "big" #'string=))
+
+  ;; volatile cells (RAND()/NOW() model): recompute on EVERY sweep even when
+  ;; no precedent changed; plain cells don't. Volatility is a subclass the
+  ;; behavior dispatches on, toggled in place via CHANGE-CLASS.
+  (let ((s (make-sheet)))
+    (setf *vcount* 0 *pcount* 0)
+    (set-cell s "A1" 1)
+    (set-cell s "V1" '(incf *vcount*) :volatile t)   ; volatile
+    (set-cell s "P1" '(incf *pcount*))               ; plain, identical shape
+    (set-cell s "D1" '(cell "V1"))                   ; depends on the volatile
+    (check (and (member (parse-ref "V1") (volatile-refs s) :test 'equal) t) t)
+    (check (volatile-p (cellisp::find-cell s (parse-ref "V1"))) t)
+    (check (volatile-p (cellisp::find-cell s (parse-ref "P1"))) nil)
+    (let ((v (get-value s "V1")) (p (get-value s "P1")))
+      (set-cell s "A1" 2)                            ; unrelated change
+      (check (> (get-value s "V1") v) t)             ; V1 recomputed anyway
+      (check (get-value s "P1") p)                   ; P1 did NOT recompute
+      (check (get-value s "D1") (get-value s "V1"))) ; dependent tracks V1
+    ;; demote V1 to a plain cell; it stops recomputing on unrelated sweeps
+    (set-cell s "V1" '(incf *vcount*) :volatile nil)
+    (check (volatile-p (cellisp::find-cell s (parse-ref "V1"))) nil)
+    (let ((v (get-value s "V1")))
+      (set-cell s "A1" 3)                            ; unrelated change
+      (check (get-value s "V1") v)))                 ; now frozen
 
   ;; environment constants; the compiled thunk is cached but must still
   ;; re-evaluate on input changes and recompile when the formula changes.

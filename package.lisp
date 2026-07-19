@@ -12,8 +12,11 @@
    #:set-cell #:set-cells #:clear-cell #:get-value #:get-formula
    ;; recalculation
    #:recalc #:recalc-all
+   ;; cell classes (note: CELL the class shares its symbol with the CELL
+   ;; formula reader, already exported below)
+   #:volatile-cell #:volatile-p
    ;; introspection
-   #:dependents #:precedents #:map-cells
+   #:dependents #:precedents #:map-cells #:volatile-refs
    ;; conditions
    #:sheet-error #:cyclic-reference #:cell-eval-error #:unbound-cell
    #:cyclic-reference-cells #:cell-eval-error-original

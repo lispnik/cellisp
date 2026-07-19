@@ -4,13 +4,20 @@
 ;;;; Public API
 ;;;; ------------------------------------------------------------------
 
-(defun set-cell (sheet designator formula)
+(defun set-cell (sheet designator formula &key (volatile nil volatile-supplied-p))
   "Store FORMULA in the cell at DESIGNATOR and recompute it together
 with everything (transitively) depending on it. Returns the new value
-of the cell, or signals if its own evaluation fails."
+of the cell, or signals if its own evaluation fails.
+
+VOLATILE, when supplied, marks (or unmarks) the cell as a volatile cell —
+one recomputed on every recalc regardless of whether a precedent changed
+(cf. RAND()/NOW()). Volatility is sticky: it only changes when the keyword
+is explicitly passed, so re-setting a formula doesn't silently demote it."
   (let* ((ref (parse-ref designator))
          (cell (ensure-cell sheet ref)))
     (setf (cell-formula cell) formula)
+    (when volatile-supplied-p
+      (set-cell-volatile sheet ref cell volatile))
     (let ((*sheet* sheet))
       (recompute-closure sheet (list ref)))
     (if (cell-err cell)
@@ -50,6 +57,7 @@ they still read it)."
             (when c (setf (cell-dependents c)
                           (remove ref (cell-dependents c) :test 'equal)))))
         (remhash ref (sheet-cells sheet))
+        (remhash ref (sheet-volatiles sheet))   ; drop from the volatile registry
         (let ((*sheet* sheet))
           (recompute-closure sheet deps))))
     (values)))
@@ -100,10 +108,12 @@ they still read it)."
 
 (defun recompute-closure (sheet seeds)
   "Recompute SEEDS and their dependents. EVALUATE-REF resolves ordering
-by pulling precedents, so we just force each affected cell once."
-  (let ((*sheet* sheet)
-        (*fresh* (make-hash-table :test 'equal))
-        (refs (affected-closure sheet seeds)))
+by pulling precedents, so we just force each affected cell once. Volatile
+cells are folded into the seed set so they (and their dependents) recompute
+on every sweep even when none of their precedents changed."
+  (let* ((*sheet* sheet)
+         (*fresh* (make-hash-table :test 'equal))
+         (refs (affected-closure sheet (append seeds (volatile-refs sheet)))))
     (dolist (ref refs)
       (let ((cell (find-cell sheet ref)))
         ;; skip cells already (re)computed this sweep by an earlier cell
