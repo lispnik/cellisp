@@ -731,6 +731,24 @@
     (check (cell-log s "A2") '(10 20 30 40))            ; history unchanged
     (check settled '(40)))                              ; one settled fire, the endpoint
 
+  ;; default wraps validated (default sorts first, so its :around is outer):
+  ;; validated's INVALID-VALUE is caught by default's handler, giving soft
+  ;; validation — both a bad value and a compute error fall back to the
+  ;; default, and no error surfaces.
+  (let ((s (make-sheet)))
+    (set-validator s "A2" #'plusp)                      ; must be positive
+    (set-default s "A2" -1)                             ; else fall back to -1
+    (set-cell s "A1" 4)
+    (set-cell s "A2" '(/ 100 (cell "A1")))
+    (flet ((val (n) (set-cell s "A1" n)
+             (multiple-value-bind (v e) (get-value s "A2")
+               (check e nil)                            ; never errors
+               v)))
+      (check (val 4) 25)                                ; positive -> ok
+      (check (val 0) -1)                                ; 100/0 error -> default
+      (check (val -5) -1)                               ; -20 fails plusp -> default
+      (check (val 2) 50)))                              ; positive -> ok
+
   ;; three composition modes at once: transformed (:around compute-value) +
   ;; observable (primary cell-swept) + stats (:after cell-swept).
   (let ((s (make-sheet)) (seen '()))
