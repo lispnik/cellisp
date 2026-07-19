@@ -749,6 +749,24 @@
       (check (val -5) -1)                               ; -20 fails plusp -> default
       (check (val 2) 50)))                              ; positive -> ok
 
+  ;; retry (outer) wraps timed (inner) on compute-value: retry absorbs the
+  ;; flaky source's failures, while timed counts only successful computes —
+  ;; so source attempts (3) and timed count (1) differ on the same recompute.
+  (let ((s (make-sheet)))
+    (setf *ccount* 0)                                   ; reuse as source-attempt counter
+    (set-retry s "A1" 3)
+    (set-timed s "A1" t)
+    (set-external s "A1"
+                  (lambda () (incf *ccount*)
+                          (if (< *ccount* 3) (error "transient") 42)))
+    (check (get-value s "A1") 42)                       ; recovered despite failures
+    (check *ccount* 3)                                  ; source tried 3 times
+    (check (nth-value 1 (cell-timing s "A1")) 1)        ; timed: 1 successful compute
+    (recalc s "A1")                                     ; source healthy now
+    (check (get-value s "A1") 42)
+    (check *ccount* 4)                                  ; one attempt this time
+    (check (nth-value 1 (cell-timing s "A1")) 2))       ; timed accumulates -> 2
+
   ;; three composition modes at once: transformed (:around compute-value) +
   ;; observable (primary cell-swept) + stats (:after cell-swept).
   (let ((s (make-sheet)) (seen '()))
