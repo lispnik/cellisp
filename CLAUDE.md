@@ -26,7 +26,7 @@ sbcl --eval '(asdf:test-system "cellisp")' --quit
 
 The project must be visible to ASDF (e.g. symlinked into `~/quicklisp/local-projects/` or `~/common-lisp/`, or registered on `asdf:*central-registry*`).
 
-Tests are a hand-rolled harness in `test.lisp` — no external test framework. `run-tests` prints `N checks, M failures.` and signals an `error` if any check fails. There is no per-test runner; add a `check`/`check-signals` form to `run-tests` to test one thing.
+Tests are a hand-rolled harness in `test.lisp` — no external test framework. `run-tests` prints `N checks, M failures.` and signals an `error` if any check fails. There is no per-test runner; add a `check`/`check-signals` form to `run-tests` to test one thing. There is also a **property-based** check, `property-incremental=full`: over many random acyclic sheets and edit sequences (a deterministic LCG, so failures reproduce), it asserts the invariant that incremental recompute always equals a full `recalc-all` — the guard on the propagation short-circuit and the recompute core.
 
 ## Architecture
 

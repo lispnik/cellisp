@@ -25,6 +25,51 @@
 (defun ser-obs (v) (push v *ser-obs*))
 (defun ser-nonneg (v) (and (realp v) (>= v 0)))
 
+;;; --- property-based testing -----------------------------------------
+;;; Invariant: after any sequence of incremental edits, every cell equals a
+;;; full RECALC-ALL. This guards the propagation short-circuit (and the whole
+;;; recompute core) against leaving a stale value. Uses a small deterministic
+;;; LCG so failures are reproducible.
+
+(defvar *prng* 1)
+(defun nextr (n)
+  "Deterministic pseudo-random integer in [0, N) (LCG seeded via *PRNG*)."
+  (setf *prng* (mod (+ (* *prng* 1103515245) 12345) 2147483648))
+  (mod (ash *prng* -8) n))
+(defun cref (i) (format nil "A~D" i))
+(defun rand-formula (i)
+  "A random formula for cell I (1-based) referencing only earlier cells — so
+the graph stays acyclic and unbound-free — using lossy ops (mod/min/max/abs)
+that frequently leave a value unchanged, exercising the short-circuit."
+  (if (or (= i 1) (zerop (nextr 3)))
+      (nextr 10)                                   ; literal 0..9
+      (flet ((e () `(cell ,(cref (1+ (nextr (1- i)))))))
+        (case (nextr 6)
+          (0 `(+ ,(e) ,(e)))
+          (1 `(* ,(e) ,(e)))
+          (2 `(- ,(e) ,(e)))
+          (3 `(max ,(e) ,(e)))
+          (4 `(min ,(e) ,(e)))
+          (t `(mod (abs ,(e)) 4))))))
+(defun values-vector (s n)
+  (loop for i from 1 to n collect (get-value s (cref i))))
+(defun property-incremental=full (&key (trials 40) (n 12) (edits 50) (seed 1))
+  "Run random trials; after each incremental edit assert the sheet's values
+equal a full RECALC-ALL. Returns T iff the invariant always held."
+  (setf *prng* seed)
+  (dotimes (tr trials t)
+    (let ((s (make-sheet)))
+      (loop for i from 1 to n do (set-cell s (cref i) (rand-formula i)))
+      (dotimes (e edits)
+        (let ((i (1+ (nextr n))))
+          (set-cell s (cref i) (rand-formula i)))  ; one incremental edit
+        (let ((before (values-vector s n)))
+          (recalc-all s)                           ; full recompute (the oracle)
+          (unless (equal before (values-vector s n))
+            (format t "~&property violation (trial ~D, edit ~D):~%  incremental ~S~%  full        ~S~%"
+                    tr e before (values-vector s n))
+            (return-from property-incremental=full nil)))))))
+
 (defmacro check (form expected &optional (test '#'equal))
   `(progn
      (incf *count*)
@@ -105,6 +150,10 @@
       (set-cell s "A1" -3)              ; now A2 flips to -1
       (check (get-value s "A3") -10)    ; A3 recomputed
       (check (> *evals* n) t)))
+
+  ;; property: incremental recompute always equals a full RECALC-ALL, over many
+  ;; random acyclic sheets and edit sequences (guards the short-circuit).
+  (check (property-incremental=full) t)
 
   ;; set-cells: install a whole batch, then one sweep. Forward references
   ;; in any order resolve with no transient error; the return value is the
