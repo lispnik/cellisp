@@ -715,6 +715,22 @@
     (set-cell s "A1" 8)                                 ; even again
     (check (get-value s "A2") 8) (check *ccount* 3))    ; invalid was not cached
 
+  ;; debounced + logged both hook CELL-SWEPT :after but with opposite intent:
+  ;; logged keeps EVERY change immediately, debounced coalesces the burst into
+  ;; one settled fire. Manual scheduler makes the settle explicit.
+  (let ((s (make-sheet)) (settled '()) (queue '()))
+    (set-cell s "A1" 0)
+    (set-cell s "A2" '(* 10 (cell "A1")))
+    (set-logged s "A2" t)
+    (debounce s "A2" (lambda (v) (push v settled))
+              :scheduler (lambda (th) (push th queue)))
+    (dolist (n '(1 2 3 4)) (set-cell s "A1" n))         ; A2: 10,20,30,40
+    (check (cell-log s "A2") '(10 20 30 40))            ; logged every change
+    (check settled '())                                 ; debounced deferred all
+    (dolist (th (reverse queue)) (funcall th))          ; settle
+    (check (cell-log s "A2") '(10 20 30 40))            ; history unchanged
+    (check settled '(40)))                              ; one settled fire, the endpoint
+
   ;; three composition modes at once: transformed (:around compute-value) +
   ;; observable (primary cell-swept) + stats (:after cell-swept).
   (let ((s (make-sheet)) (seen '()))
