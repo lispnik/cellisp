@@ -992,6 +992,25 @@
         (check (get-value s2 "A3") 700)                   ; recovered
         (check (get-value s2 "B1") 70))))                 ; dependent recovered too
 
+  ;; a cyclic formula in the saved form is caught per-cell on load (cycle
+  ;; detection runs in the load sweep), the load succeeds, and breaking the
+  ;; cycle recovers the cells.
+  (let ((s1 (make-sheet :environment '((tax . 1/10)))))
+    (set-cells s1 '(("A1" 1000) ("A2" 300)
+                    ("A3" (- (cell "A1") (cell "A2")))
+                    ("B1" (* (cell "A3") tax))))
+    (let ((form (sheet->form s1)))
+      (dolist (pl (getf (cdr form) :cells))               ; A3 now reads B1 (reads A3)
+        (when (equal (getf pl :ref) "A3")
+          (setf (getf pl :formula) '(+ (cell "B1") 1))))
+      (let ((s2 (form->sheet form)))                      ; must not crash
+        (check (get-value s2 "A1") 1000)                  ; unrelated cells fine
+        (check (typep (nth-value 1 (get-value s2 "A3")) 'cyclic-reference) t)
+        (check (typep (nth-value 1 (get-value s2 "B1")) 'cyclic-reference) t)
+        (set-cell s2 "A3" '(- (cell "A1") (cell "A2")))   ; break the cycle
+        (check (get-value s2 "A3") 700)                   ; recovered
+        (check (get-value s2 "B1") 70))))                 ; dependent recovered
+
   ;; save-sheet / load-sheet round-trip through an actual file
   (let ((path (merge-pathnames "cellisp-roundtrip-test.sheet"
                                (uiop:temporary-directory)))
