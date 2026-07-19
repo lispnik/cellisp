@@ -32,6 +32,9 @@
    #:set-versioned #:cell-versions #:set-audited #:cell-audit
    ;; concurrency
    #:with-sheet-lock
+   ;; serialization
+   #:write-sheet #:read-sheet #:save-sheet #:load-sheet
+   #:sheet->form #:form->sheet
    ;; introspection
    #:dependents #:precedents #:map-cells #:volatile-refs
    ;; conditions

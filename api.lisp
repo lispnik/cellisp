@@ -145,10 +145,13 @@ on every sweep even when none of their precedents changed."
             ;; so one broken cell doesn't abort the whole sweep.
             (sheet-error () nil)))))
     ;; sweep settled: notify each computed cell (observed cells fire here).
+    ;; Skip cells that errored this sweep — they have no settled value for the
+    ;; :after CELL-SWEPT sinks (observe/log/persist/…) to record or emit.
     (maphash (lambda (ref present)
                (declare (ignore present))
                (let ((cell (find-cell sheet ref)))
-                 (when cell (cell-swept cell sheet ref))))
+                 (when (and cell (null (cell-err cell)))
+                   (cell-swept cell sheet ref))))
              *fresh*)))
 
 (defun recalc (sheet designator)

@@ -767,6 +767,29 @@
     (check *ccount* 4)                                  ; one attempt this time
     (check (nth-value 1 (cell-timing s "A1")) 2))       ; timed accumulates -> 2
 
+  ;; :after CELL-SWEPT sinks skip errored cells: a validation failure nulls the
+  ;; value and stores the error, so PERSISTED does not emit a spurious NIL.
+  (let ((s (make-sheet)) (store '()))
+    (set-cell s "A1" 10)
+    (set-validator s "A2" #'plusp)
+    (set-persist s "A2" (lambda (v) (push v store)))
+    (set-cell s "A2" '(cell "A1"))                       ; 10 valid -> persist
+    (set-cell s "A1" 25)                                 ; 25 valid -> persist
+    (set-cell s "A1" -3)                                 ; invalid -> errored -> skipped
+    (set-cell s "A1" 40)                                 ; 40 valid -> persist
+    (check (reverse store) '(10 25 40)))                 ; no NIL gap
+
+  ;; observers likewise are not notified when the cell errors
+  (let ((s (make-sheet)) (seen '()))
+    (set-cell s "A1" 4)
+    (set-validator s "A2" #'evenp)
+    (set-cell s "A2" '(cell "A1"))
+    (observe s "A2" (lambda (v) (push v seen)))
+    (set-cell s "A1" 6)                                  ; even -> notify
+    (set-cell s "A1" 5)                                  ; odd -> errored -> silent
+    (set-cell s "A1" 8)                                  ; even -> notify
+    (check seen '(8 6)))
+
   ;; three composition modes at once: transformed (:around compute-value) +
   ;; observable (primary cell-swept) + stats (:after cell-swept).
   (let ((s (make-sheet)) (seen '()))
@@ -805,6 +828,40 @@
       (mapc #'bt:join-thread threads))
     (check (integerp (get-value s "A1")) t)
     (check (numberp (get-value s "A2")) t))
+
+  ;; serialization: formulas + environment + declarative attributes round-trip
+  ;; through a stream; values recompute on load.
+  (let ((s1 (make-sheet :environment '((tax . 1/10)))))
+    (set-cells s1 '(("A1" 10) ("A2" 20)
+                    ("A3" (+ (cell "A1") (cell "A2")))
+                    ("B1" (* (cell "A1") tax))))
+    (set-volatile s1 "A1" t)
+    (set-readonly s1 "A3" t)
+    (set-frozen s1 "B1" t)
+    (set-append-only s1 "A2" t)
+    (let* ((text (with-output-to-string (o) (write-sheet s1 o)))
+           (s2 (with-input-from-string (i text) (read-sheet i))))
+      (check (get-value s2 "A3") 30)                        ; recomputed on load
+      (check (get-value s2 "B1") 1)                         ; env constant preserved
+      (check (get-formula s2 "A3") '(+ (cell "A1") (cell "A2")))
+      (check (volatile-p s2 "A1") t)                        ; attributes restored
+      (check (frozen-p s2 "B1") t)
+      (check-signals readonly-cell (set-cell s2 "A3" 0))    ; readonly restored
+      (check-signals readonly-cell (set-cell s2 "A2" 99)))) ; append-only restored
+
+  ;; save-sheet / load-sheet round-trip through an actual file
+  (let ((path (merge-pathnames "cellisp-roundtrip-test.sheet"
+                               (uiop:temporary-directory)))
+        (s1 (make-sheet)))
+    (set-cells s1 '(("A1" 5) ("A2" (* (cell "A1") 3))))
+    (save-sheet s1 path)
+    (unwind-protect
+         (let ((s2 (load-sheet path)))
+           (check (get-value s2 "A2") 15))
+      (when (probe-file path) (delete-file path))))
+
+  ;; a non-sheet form is rejected
+  (check-signals sheet-error (form->sheet '(:not-a-sheet)))
 
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Test failures: ~D" *fails*))
