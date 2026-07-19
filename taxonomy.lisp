@@ -102,9 +102,19 @@ clear / source change, with no new formula, is allowed)."))
   (:documentation "Record every formula assigned to the cell (most recent
 first) via the NOTE-SET hook — an edit history. Read with CELL-VERSIONS."))
 
-(defmethod note-set ((cell versioned-mixin) sheet ref new-formula)
-  (declare (ignore sheet ref))
+(defmethod note-set :after ((cell versioned-mixin) sheet ref new-formula actor time)
+  (declare (ignore sheet ref actor time))
   (push new-formula (formula-versions cell)))
+
+(defclass audited-mixin ()
+  ((audit-log :initform '() :accessor audit-log))
+  (:documentation "Full edit provenance: record (:time :actor :formula) for
+every mutation via NOTE-SET, using the ACTOR and TIME threaded from the set
+path (*actor* / *audit-clock*). Read with CELL-AUDIT."))
+
+(defmethod note-set :after ((cell audited-mixin) sheet ref new-formula actor time)
+  (declare (ignore sheet ref))
+  (push (list :time time :actor actor :formula new-formula) (audit-log cell)))
 
 ;;; --- logging mixin (an :AFTER method on CELL-SWEPT) -----------------
 
@@ -356,7 +366,7 @@ before giving up — for transient failures in external/async cells."))
   '(observable-mixin readonly-mixin logged-mixin cached-mixin debounced-mixin
     default-mixin transformed-mixin validated-mixin timed-mixin retry-mixin
     ttl-cached-mixin throttled-mixin threshold-mixin stats-mixin persisted-mixin
-    append-only-mixin typed-input-mixin versioned-mixin)
+    append-only-mixin typed-input-mixin versioned-mixin audited-mixin)
   "Known composable behavior mixins. Add a new cross-cutting axis by defining
 a mixin (overriding some generic) and listing it here.")
 
@@ -576,6 +586,17 @@ versioned)."
     (let ((cell (find-cell sheet (parse-ref designator))))
       (if (typep cell 'versioned-mixin)
           (reverse (formula-versions cell))
+          '()))))
+
+(define-mixin-toggle set-audited audited-mixin)   ; arg is just the on/off flag
+
+(defun cell-audit (sheet designator)
+  "The audit trail for DESIGNATOR — a list of (:time T :actor A :formula F)
+plists, oldest first (empty unless audited)."
+  (with-sheet-lock (sheet)
+    (let ((cell (find-cell sheet (parse-ref designator))))
+      (if (typep cell 'audited-mixin)
+          (reverse (audit-log cell))
           '()))))
 
 (defun set-timed (sheet designator timed)

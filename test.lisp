@@ -634,6 +634,30 @@
     (set-cell s "A1" '(+ 1 1))
     (check (cell-versions s "A1") '(1 2 (+ 1 1))))
 
+  ;; audited-mixin: full provenance — WITH-ACTOR supplies the author, the
+  ;; injectable *audit-clock* supplies deterministic timestamps.
+  (let ((s (make-sheet)) (tick 100))
+    (let ((*audit-clock* (lambda () (incf tick))))
+      (set-audited s "A1" t)
+      (with-actor ("alice") (set-cell s "A1" 1))       ; time 101
+      (with-actor ("bob")   (set-cell s "A1" 2))       ; time 102
+      (let ((trail (cell-audit s "A1")))
+        (check (length trail) 2)
+        (check (getf (first trail) :actor) "alice" #'string=)
+        (check (getf (first trail) :formula) 1)
+        (check (getf (first trail) :time) 101)
+        (check (getf (second trail) :actor) "bob" #'string=)
+        (check (getf (second trail) :time) 102))))
+
+  ;; audited + versioned compose: both NOTE-SET :after methods run
+  (let ((s (make-sheet)))
+    (let ((*audit-clock* (constantly 0)))
+      (set-audited s "A1" t)
+      (set-versioned s "A1" t)
+      (with-actor ("carol") (set-cell s "A1" 7))
+      (check (cell-versions s "A1") '(7))              ; versioned recorded
+      (check (getf (first (cell-audit s "A1")) :actor) "carol" #'string=)))
+
   ;; three composition modes at once: transformed (:around compute-value) +
   ;; observable (primary cell-swept) + stats (:after cell-swept).
   (let ((s (make-sheet)) (seen '()))

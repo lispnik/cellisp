@@ -4,6 +4,11 @@
 ;;;; Public API
 ;;;; ------------------------------------------------------------------
 
+(defmacro with-actor ((actor) &body body)
+  "Run BODY with ACTOR recorded as the author of any mutations (for
+AUDITED-MIXIN / edit provenance)."
+  `(let ((*actor* ,actor)) ,@body))
+
 (defun set-cell (sheet designator formula &key (volatile nil volatile-supplied-p))
   "Store FORMULA in the cell at DESIGNATOR and recompute it together
 with everything (transitively) depending on it. Returns the new value
@@ -17,7 +22,7 @@ is explicitly passed, so re-setting a formula doesn't silently demote it."
     (let* ((ref (parse-ref designator))
            (cell (ensure-cell sheet ref)))
       (unless (cell-writable-p cell formula) (error 'readonly-cell :ref ref))
-      (note-set cell sheet ref formula)
+      (note-set cell sheet ref formula *actor* (funcall *audit-clock*))
       (setf (cell-formula cell) formula)
       (when volatile-supplied-p
         (set-cell-volatile sheet ref volatile))
@@ -45,12 +50,13 @@ for a cell that errored). A later pair for the same cell wins."
              (existing (find-cell sheet ref)))
         (when (and existing (not (cell-writable-p existing (second pair))))
           (error 'readonly-cell :ref ref))))
-    (let ((refs (loop for (designator formula) in bindings
-                      for ref = (parse-ref designator)
-                      for cell = (ensure-cell sheet ref)
-                      do (note-set cell sheet ref formula)
-                         (setf (cell-formula cell) formula)
-                      collect ref)))
+    (let* ((time (funcall *audit-clock*))    ; one timestamp for the whole batch
+           (refs (loop for (designator formula) in bindings
+                       for ref = (parse-ref designator)
+                       for cell = (ensure-cell sheet ref)
+                       do (note-set cell sheet ref formula *actor* time)
+                          (setf (cell-formula cell) formula)
+                       collect ref)))
       (recompute-closure sheet refs)
       (mapcar (lambda (r) (get-value sheet r)) refs))))
 

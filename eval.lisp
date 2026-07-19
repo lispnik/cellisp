@@ -26,6 +26,12 @@
 (defvar *fresh* nil
   "When bound (a hash-table) for the duration of one recompute sweep, holds
 the refs already computed this sweep so each cell is computed at most once.")
+(defvar *actor* nil
+  "Identity of whoever is making the current mutation, recorded by
+AUDITED-MIXIN. Bind it with WITH-ACTOR.")
+(defvar *audit-clock* #'get-universal-time
+  "Thunk returning the timestamp stamped on audit/version entries. Rebind for
+deterministic tests.")
 
 ;;; --- reference reading primitives, callable from formulas -----------
 
@@ -160,11 +166,12 @@ mutators; internal recomputation ignores it.")
     (declare (ignore new-formula))
     t))
 
-(defgeneric note-set (cell sheet ref new-formula)
+(defgeneric note-set (cell sheet ref new-formula actor time)
   (:documentation "Called on the public set path just before CELL's formula is
-replaced with NEW-FORMULA — a hook for edit history / auditing. Inert base.")
-  (:method ((cell cell) sheet ref new-formula)
-    (declare (ignore sheet ref new-formula))
+replaced with NEW-FORMULA, carrying the ACTOR (*actor*) and TIME (*audit-clock*)
+of the change — a hook for edit history / auditing. Inert base.")
+  (:method ((cell cell) sheet ref new-formula actor time)
+    (declare (ignore sheet ref new-formula actor time))
     nil))
 
 ;;; --- the recalculation core -----------------------------------------

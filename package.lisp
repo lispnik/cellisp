@@ -19,9 +19,9 @@
    #:debounced-mixin #:default-mixin #:transformed-mixin #:validated-mixin
    #:timed-mixin #:retry-mixin #:ttl-cached-mixin #:throttled-mixin
    #:threshold-mixin #:stats-mixin #:persisted-mixin #:append-only-mixin
-   #:typed-input-mixin #:versioned-mixin
+   #:typed-input-mixin #:versioned-mixin #:audited-mixin
    #:compute-value #:cell-swept #:volatile-p #:cell-writable-p
-   #:note-set #:frozen-p
+   #:note-set #:frozen-p #:with-actor #:*actor* #:*audit-clock*
    ;; cell-kind constructors / drivers
    #:set-external #:set-async #:refresh-async #:deliver-async
    #:set-volatile #:set-readonly #:set-logged #:cell-log #:set-cached
@@ -29,7 +29,7 @@
    #:set-default #:set-transform #:set-validator #:set-timed #:cell-timing
    #:set-retry #:set-ttl #:throttle #:on-threshold #:set-stats #:cell-stats
    #:set-persist #:set-append-only #:set-typed-input #:set-frozen
-   #:set-versioned #:cell-versions
+   #:set-versioned #:cell-versions #:set-audited #:cell-audit
    ;; concurrency
    #:with-sheet-lock
    ;; introspection
