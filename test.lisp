@@ -972,6 +972,26 @@
         (check (get-value s2 "B1") 40)                    ; tax repriced
         (check (get-value s2 "C1") 240))))                ; total repriced
 
+  ;; a broken formula in the saved form doesn't abort the load: the bad cell
+  ;; and its dependents error, unrelated cells are fine, and fixing the bad
+  ;; cell recovers both (the on-error dependency-link commit at work).
+  (let ((s1 (make-sheet :environment '((tax . 1/10)))))
+    (set-cells s1 '(("A1" 1000) ("A2" 300)
+                    ("A3" (- (cell "A1") (cell "A2")))    ; net
+                    ("B1" (* (cell "A3") tax))))          ; depends on net
+    (let ((form (sheet->form s1)))
+      (dolist (pl (getf (cdr form) :cells))               ; break A3: divide by zero
+        (when (equal (getf pl :ref) "A3")
+          (setf (getf pl :formula) '(/ (cell "A1") 0))))
+      (let ((s2 (form->sheet form)))                      ; load must not crash
+        (check (get-value s2 "A1") 1000)                  ; unrelated cells fine
+        (check (get-value s2 "A2") 300)
+        (check (and (nth-value 1 (get-value s2 "A3")) t) t)  ; A3 errored
+        (check (and (nth-value 1 (get-value s2 "B1")) t) t)  ; B1 errored (reads A3)
+        (set-cell s2 "A3" '(- (cell "A1") (cell "A2")))   ; fix it
+        (check (get-value s2 "A3") 700)                   ; recovered
+        (check (get-value s2 "B1") 70))))                 ; dependent recovered too
+
   ;; save-sheet / load-sheet round-trip through an actual file
   (let ((path (merge-pathnames "cellisp-roundtrip-test.sheet"
                                (uiop:temporary-directory)))

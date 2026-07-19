@@ -83,7 +83,9 @@ and closure-based config are not written."
                  sheet)
       (list :cellisp-sheet
             :version *serialization-version*
-            :environment (sheet-environment sheet)
+            ;; copy the alist so a caller editing the form can't mutate the
+            ;; sheet's live environment (or a shared quoted constant)
+            :environment (copy-alist (sheet-environment sheet))
             :cells (nreverse cells)))))
 
 (defun form->sheet (form)
