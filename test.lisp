@@ -679,6 +679,22 @@
       (check (getf (fourth trail) :actor) "carol" #'string=)
       (check (getf (fourth trail) :formula) 80)))
 
+  ;; stats + persisted both hook CELL-SWEPT :after, so each reading is written
+  ;; to the sink AND folded into the running stats in the same sweep.
+  (let ((s (make-sheet)) (store '()))
+    (set-cell s "A1" 20)
+    (set-cell s "A2" '(cell "A1"))                     ; A2 mirrors the reading
+    (set-stats   s "A2" t)                             ; (attached after the initial 20)
+    (set-persist s "A2" (lambda (v) (push v store)))
+    (dolist (n '(25 18 30 22 27)) (set-cell s "A1" n))
+    (check (reverse store) '(25 18 30 22 27))          ; every reading persisted
+    (let ((st (cell-stats s "A2")))
+      (check (getf st :count) 5)
+      (check (getf st :min) 18)
+      (check (getf st :max) 30)
+      (check (getf st :sum) 122)
+      (check (getf st :mean) 122/5)))                   ; 24.4
+
   ;; three composition modes at once: transformed (:around compute-value) +
   ;; observable (primary cell-swept) + stats (:after cell-swept).
   (let ((s (make-sheet)) (seen '()))
