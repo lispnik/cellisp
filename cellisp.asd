@@ -7,6 +7,7 @@
   :components ((:file "package")
                (:file "cell")
                (:file "sheet")
+               (:file "workbook")
                (:file "eval")
                (:file "api")
                (:file "taxonomy")

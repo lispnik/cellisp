@@ -3,7 +3,10 @@
   (:nicknames #:sheet)
   (:export
    ;; sheet
-   #:make-sheet #:sheet #:sheet-p
+   #:make-sheet #:sheet #:sheet-p #:sheet-name #:sheet-workbook
+   ;; workbook (multi-sheet)
+   #:workbook #:workbook-p #:make-workbook #:add-sheet #:find-sheet
+   #:remove-sheet #:workbook-sheets #:workbook-names #:recompute-workbook
    ;; reference parsing
    #:ref #:parse-ref #:ref-string #:ref-row #:ref-col
    ;; cell access
@@ -37,6 +40,8 @@
    ;; serialization
    #:write-sheet #:read-sheet #:save-sheet #:load-sheet
    #:sheet->form #:form->sheet
+   #:write-workbook #:read-workbook #:save-workbook #:load-workbook
+   #:workbook->form #:form->workbook
    ;; structural editing + copy/paste
    #:insert-row #:delete-row #:insert-column #:delete-column
    #:copy-cell #:fill-range #:spill

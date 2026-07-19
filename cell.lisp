@@ -86,6 +86,10 @@
    ;; Refs this cell reads (its precedents) and refs that read it (dependents).
    (precedents :initform '() :accessor cell-precedents :type list)
    (dependents :initform '() :accessor cell-dependents :type list)
+   ;; Cross-sheet precedents: cells this one reads in OTHER sheets, as a list of
+   ;; grefs (sheet . ref). The producer side is tracked on the sheet's
+   ;; FOREIGN-DEPENDENTS table. Empty for a standalone (non-workbook) sheet.
+   (foreign-precedents :initform '() :accessor cell-foreign-precedents :type list)
    ;; Compiled-thunk cache for the environment eval path: COMPILED is the
    ;; function compiled from the formula in COMPILED-FROM (compared by EQ).
    (compiled :initform nil :accessor cell-compiled :type (or null function))

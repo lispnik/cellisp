@@ -97,6 +97,33 @@ A name can also alias a whole **range**, read with the one-argument form of
 Both kinds of name follow their cells across structural edits and round-trip
 through serialization.
 
+### Workbooks (multiple sheets)
+
+A **workbook** groups named sheets, and a formula reaches another sheet with a
+`Sheet!A1` qualifier. The dependency graph spans sheets, so editing a cell on one
+sheet recomputes everything that reads it on any other — the same incremental,
+short-circuited recompute, now cross-sheet:
+
+```lisp
+(let* ((wb (make-workbook))
+       (data    (add-sheet wb "Data"))
+       (summary (add-sheet wb "Summary")))
+  (set-cell data "A1" 10)
+  (set-cell data "A2" 20)
+  (set-cell summary "B1" '(sum (cells "Data!A1" "Data!A2")))
+  (get-value summary "B1")            ; => 30
+  (set-cell data "A1" 100)            ; edit on Data…
+  (get-value summary "B1"))           ; => 120  (Summary recomputed)
+```
+
+Sheet names are case-insensitive; `find-sheet` looks one up, `workbook-names`
+lists them in order. A sheet from `make-sheet` is standalone and pays none of the
+cross-sheet cost. Producers are always recomputed before their consumers;
+a genuine cross-sheet reference *cycle* is detected and flagged
+(`cyclic-reference`) rather than looping. Whole workbooks persist with
+`save-workbook` / `load-workbook` (and `write-workbook` / `read-workbook` for
+streams), values recomputed on load just like a single sheet.
+
 ### Errors and recovery
 
 Reads never raise — `get-value` returns `(values value error-or-nil)`. A cell

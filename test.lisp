@@ -466,6 +466,86 @@ the invariant always held."
     (check (ref-row (cdr (used-range s))) 4)             ; ref-row/-col exported
     (check (ref-col (cdr (used-range s))) 3))
 
+  ;; --- multi-sheet workbooks + cross-sheet references ---------------
+
+  ;; a cross-sheet reference reads another sheet and propagates on edit
+  (let* ((wb (make-workbook)) (d (add-sheet wb "Data")) (s (add-sheet wb "Summary")))
+    (set-cell d "A1" 10)
+    (set-cell d "A2" 20)
+    (set-cell s "B1" '(+ (cell "Data!A1") (cell "Data!A2")))
+    (check (get-value s "B1") 30)
+    (set-cell d "A1" 100)                                ; edit producer
+    (check (get-value s "B1") 120)                       ; consumer recomputed
+    ;; a cross-sheet edit fires the CONSUMER sheet's change hook
+    (let ((seen :none))
+      (set-change-hook s (lambda (refs) (setf seen (mapcar #'ref-string refs))))
+      (set-cell d "A2" 5)
+      (check seen '("B1"))))                             ; Summary!B1 repainted
+
+  ;; cross-sheet range read, and a cross-sheet named cell
+  (let* ((wb (make-workbook)) (d (add-sheet wb "Data")) (s (add-sheet wb "Sum")))
+    (dotimes (i 3) (set-cell d (cellisp::make-ref i 0) (* (1+ i) 10)))  ; A1..A3
+    (set-name d "top" "A1")
+    (set-cell s "B1" '(sum (cells "Data!A1" "Data!A3")))
+    (set-cell s "B2" '(* (cell "Data!top") 2))
+    (check (get-value s "B1") 60)                        ; 10+20+30 across sheets
+    (check (get-value s "B2") 20)                        ; Data!top = A1 = 10
+    (set-cell d "A2" 25)
+    (check (get-value s "B1") 65))                       ; range tracks the edit
+
+  ;; clearing a producer errors its cross-sheet consumer; re-setting recovers
+  (let* ((wb (make-workbook)) (d (add-sheet wb "D")) (s (add-sheet wb "S")))
+    (set-cell d "A1" 7)
+    (set-cell s "A1" '(* (cell "D!A1") 2))
+    (check (get-value s "A1") 14)
+    (clear-cell d "A1")
+    (check (and (nth-value 1 (get-value s "A1")) t) t)   ; consumer now errors
+    (set-cell d "A1" 8)
+    (check (get-value s "A1") 16))                       ; and recovers
+
+  ;; find-sheet is case-insensitive; duplicate names are refused
+  (let* ((wb (make-workbook)) (d (add-sheet wb "Data")))
+    (check (eq (find-sheet wb "DATA") d) t)
+    (check (eq (find-sheet wb "data") d) t)
+    (check (workbook-names wb) '("Data"))
+    (check-signals sheet-error (add-sheet wb "data")))
+
+  ;; referencing an unknown sheet, or any sheet with no workbook, errors the cell
+  (let* ((wb (make-workbook)) (s (add-sheet wb "Only")))
+    (ignore-errors (set-cell s "A1" '(cell "Nope!A1")))  ; set-cell re-signals own err
+    (check (and (nth-value 1 (get-value s "A1")) t) t)
+    (let ((lone (make-sheet)))                           ; standalone: no workbook
+      (ignore-errors (set-cell lone "A1" '(cell "Other!A1")))
+      (check (and (nth-value 1 (get-value lone "A1")) t) t)))
+
+  ;; a cross-sheet reference CYCLE terminates and is flagged, not looped forever
+  (let* ((wb (make-workbook)) (s1 (add-sheet wb "S1")) (s2 (add-sheet wb "S2")))
+    (set-cell s1 "A1" 1)
+    (set-cell s2 "A1" '(+ 1 (cell "S1!A1")))
+    (ignore-errors (set-cell s1 "A1" '(+ 1 (cell "S2!A1"))))
+    (check (typep (nth-value 1 (get-value s2 "A1")) 'cyclic-reference) t))
+
+  ;; detaching: a consumer that stops reading a producer no longer recomputes
+  (let* ((wb (make-workbook)) (d (add-sheet wb "D")) (s (add-sheet wb "S")))
+    (set-cell d "A1" 1)
+    (set-cell s "A1" '(cell "D!A1"))
+    (check (get-value s "A1") 1)
+    (set-cell s "A1" 99)                                 ; drop the cross-sheet link
+    (set-cell d "A1" 500)                                ; edit the old producer
+    (check (get-value s "A1") 99))                       ; consumer untouched
+
+  ;; a whole workbook round-trips through serialization, graph and all
+  (let* ((wb (make-workbook)) (d (add-sheet wb "Data")) (s (add-sheet wb "Summary")))
+    (set-cell d "A1" 10) (set-cell d "A2" 20)
+    (set-cell s "B1" '(+ (cell "Data!A1") (cell "Data!A2")))
+    (let* ((text (with-output-to-string (o) (write-workbook wb o)))
+           (wb2 (with-input-from-string (i text) (read-workbook i)))
+           (d2 (find-sheet wb2 "Data")) (s2 (find-sheet wb2 "Summary")))
+      (check (workbook-names wb2) '("Data" "Summary"))
+      (check (get-value s2 "B1") 30)                     ; cross-sheet value restored
+      (set-cell d2 "A1" 100)                             ; and the graph is live
+      (check (get-value s2 "B1") 120)))
+
   ;; undo/redo of a formula edit, cascading to dependents
   (let ((s (make-sheet)))
     (set-cell s "A1" 1)

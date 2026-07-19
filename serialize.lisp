@@ -199,3 +199,63 @@ environment value is not readably printable."
   "Load and reconstruct a sheet from the file at PATH."
   (with-open-file (s path :direction :input)
     (read-sheet s)))
+
+;;;; ------------------------------------------------------------------
+;;;; Workbook serialization
+;;;;
+;;;; A workbook is written as its ordered sheets, each reusing SHEET->FORM (so a
+;;;; cell's cross-sheet formula "Data!A1" is just its ordinary readable form).
+;;;; On load every sheet is rebuilt standalone first — cross-sheet references
+;;;; error transiently, harmlessly, since siblings aren't present yet — then all
+;;;; are attached and RECOMPUTE-WORKBOOK settles the cross-sheet values.
+;;;; ------------------------------------------------------------------
+
+(defun workbook->form (workbook)
+  "A readable form capturing WORKBOOK: its sheets in order, each (name . form)."
+  (list :cellisp-workbook
+        :version *serialization-version*
+        :sheets (loop for s in (workbook-sheets workbook)
+                      collect (cons (sheet-name s) (sheet->form s)))))
+
+(defun form->workbook (form)
+  "Reconstruct a workbook from a form produced by WORKBOOK->FORM."
+  (unless (and (consp form) (eq (car form) :cellisp-workbook))
+    (error 'sheet-error :format-control "Not a cellisp workbook form: ~S"
+                        :format-arguments (list form)))
+  (destructuring-bind (&key version sheets &allow-other-keys) (cdr form)
+    (declare (ignore version))
+    (let ((wb (make-workbook)))
+      ;; rebuild each sheet standalone (cross-sheet refs error transiently),
+      ;; then attach under its name without a premature recompute.
+      (dolist (entry sheets)
+        (%attach-sheet wb (car entry) (form->sheet (cdr entry))))
+      ;; now that every sheet and cross-reference is present, settle them.
+      (recompute-workbook wb)
+      wb)))
+
+(defun write-workbook (workbook &optional (stream *standard-output*))
+  "Write WORKBOOK to STREAM as one readable form."
+  (let ((*package* (find-package '#:cellisp))
+        (*print-escape* t)
+        (*print-readably* nil)
+        (*print-circle* t))
+    (prin1 (workbook->form workbook) stream)
+    (terpri stream))
+  (values))
+
+(defun read-workbook (&optional (stream *standard-input*))
+  "Read and reconstruct a workbook previously written by WRITE-WORKBOOK."
+  (let ((*package* (find-package '#:cellisp)))
+    (form->workbook (read stream))))
+
+(defun save-workbook (workbook path)
+  "Write WORKBOOK to the file at PATH, overwriting any existing file."
+  (with-open-file (s path :direction :output
+                          :if-exists :supersede :if-does-not-exist :create)
+    (write-workbook workbook s))
+  (values))
+
+(defun load-workbook (path)
+  "Load and reconstruct a workbook from the file at PATH."
+  (with-open-file (s path :direction :input)
+    (read-workbook s)))

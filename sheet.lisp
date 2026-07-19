@@ -70,6 +70,14 @@
   ;; (ref . formula-or-:absent) — the state to restore.
   (undo-stack '() :type list)
   (redo-stack '() :type list)
+  ;; Workbook membership: the owning workbook (or NIL when standalone) and this
+  ;; sheet's name within it. When WORKBOOK is NIL the sheet behaves exactly as a
+  ;; single-sheet engine — no cross-sheet machinery runs.
+  (workbook nil)
+  (name nil)
+  ;; Cross-sheet producer side: local-ref -> list of consumer grefs (sheet . ref)
+  ;; in OTHER sheets that read this cell. Seeds cross-sheet propagation.
+  (foreign-dependents (make-hash-table :test 'equal) :type hash-table)
   ;; Optional callback invoked after each recompute sweep with the sorted list
   ;; of refs whose value or error changed — the repaint set for a UI. NIL = off.
   ;; Not serialized (a live closure); reattach after LOAD-SHEET.

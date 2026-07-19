@@ -30,6 +30,10 @@ the refs already computed this sweep so each cell is computed at most once.")
   "When bound (a hash-table) for a sweep, COMPUTE-CELL records refs whose
 value/error actually changed — RECOMPUTE-CLOSURE uses this to short-circuit
 recompute of subtrees whose inputs did not change.")
+(defvar *collected-foreign* nil
+  "When bound (a hash-table) during COMPUTE-CELL of a cell in a workbook sheet,
+holds the cross-sheet grefs (sheet . ref) the running formula reads. NIL for a
+standalone sheet, so single-sheet evaluation allocates nothing extra.")
 (defvar *actor* nil
   "Identity of whoever is making the current mutation, recorded by
 AUDITED-MIXIN. Bind it with WITH-ACTOR.")
@@ -42,6 +46,48 @@ deterministic tests.")
 (defun note-precedent (ref)
   (when *collected-precedents*
     (setf (gethash ref *collected-precedents*) t)))
+
+(defun note-foreign (target ref)
+  "Record a cross-sheet read of TARGET's REF by the formula being computed."
+  (when *collected-foreign*
+    (setf (gethash (cons target ref) *collected-foreign*) t)))
+
+(defun split-sheet-designator (designator)
+  "For a string/symbol like \"Data!A1\", return (values \"Data\" \"A1\"). With no
+'!' separator — or for a ref cons — return (values NIL designator)."
+  (if (typep designator '(or string symbol))
+      (let* ((s (string designator))
+             (bang (position #\! s)))
+        (if bang
+            (values (subseq s 0 bang) (subseq s (1+ bang)))
+            (values nil designator)))
+      (values nil designator)))
+
+(defun require-sheet (name)
+  "The sheet named NAME in *SHEET*'s workbook, or a SHEET-ERROR if there is no
+workbook or no such sheet."
+  (let ((wb (and *sheet* (sheet-workbook *sheet*))))
+    (or (and wb (find-sheet wb name))
+        (error 'sheet-error
+               :format-control "No sheet named ~S in the workbook"
+               :format-arguments (list name)))))
+
+(defun read-foreign (target ref)
+  "Read TARGET's current cached value of REF without recomputing it — cross-sheet
+reads see the producer's settled value, and the workbook cascade keeps producers
+current. An empty cell signals UNBOUND-CELL; a stored error re-signals."
+  (let ((cell (find-cell target ref)))
+    (cond ((null cell) (error 'unbound-cell :ref ref))
+          ((cell-err cell) (error (cell-err cell)))
+          (t (cell-value cell)))))
+
+(defun read-cell-value (target ref)
+  "Read REF from TARGET, recording the dependency. When TARGET is the sheet being
+evaluated this is an ordinary on-demand pull; otherwise it is a cross-sheet read
+(non-recursive, recorded as a foreign precedent)."
+  (if (eq target *sheet*)
+      (progn (note-precedent ref) (evaluate-ref *sheet* ref))
+      (progn (note-foreign target ref) (read-foreign target ref))))
 
 (defun %lookup-name (designator)
   "The value DESIGNATOR is bound to in *SHEET*'s names table (a ref or a range
@@ -62,12 +108,16 @@ its top-left corner, so (cell RANGE) reads the block's first cell."
           (t named))))                          ; single-cell name -> its ref
 
 (defun cell (designator)
-  "Read another cell's value. Records the dependency and forces the
-referenced cell to be up to date (depth-first, with cycle detection).
-DESIGNATOR may be a registered name as well as an A1 ref."
-  (let ((ref (resolve-ref designator)))
-    (note-precedent ref)
-    (evaluate-ref *sheet* ref)))
+  "Read another cell's value. Records the dependency and forces the referenced
+cell up to date (depth-first, with cycle detection). DESIGNATOR may be a
+registered name or A1 ref, and — inside a workbook — may be qualified with a
+sheet name, as in \"Data!A1\", to read another sheet."
+  (multiple-value-bind (sheet-name local) (split-sheet-designator designator)
+    (if sheet-name
+        (let ((target (require-sheet sheet-name)))
+          ;; resolve names/refs in the TARGET sheet's namespace
+          (read-cell-value target (let ((*sheet* target)) (resolve-ref local))))
+        (read-cell-value *sheet* (resolve-ref designator)))))
 
 (defun range-corners (top-left bottom-right)
   "Two values, the top-left and bottom-right refs CELLS should span. With
@@ -82,19 +132,28 @@ range name (expands to its two stored corners) or a single cell (a 1x1 range)."
 
 (defun cells (top-left &optional bottom-right)
   "Return a list of the values in a rectangle, row-major. Two corner designators
-span it explicitly; a single argument may be a range name (or a single cell)."
-  (multiple-value-bind (a b) (range-corners top-left bottom-right)
-    (let* ((r0 (min (ref-row a) (ref-row b)))
-           (r1 (max (ref-row a) (ref-row b)))
-           (c0 (min (ref-col a) (ref-col b)))
-           (c1 (max (ref-col a) (ref-col b)))
-           (out '()))
-      (loop for r from r0 to r1 do
-        (loop for c from c0 to c1
-              for ref = (make-ref r c)
-              do (note-precedent ref)
-                 (push (evaluate-ref *sheet* ref) out)))
-      (nreverse out))))
+span it explicitly; a single argument may be a range name (or a single cell).
+Either form may be sheet-qualified (\"Data!A1\" \"Data!A10\") to read across a
+workbook; the rectangle is taken from that one target sheet."
+  (multiple-value-bind (sheet-name tl) (split-sheet-designator top-left)
+    (let* ((target (if sheet-name (require-sheet sheet-name) *sheet*))
+           ;; a qualified bottom-right's sheet part is redundant; use its local
+           (br (if (and bottom-right sheet-name)
+                   (nth-value 1 (split-sheet-designator bottom-right))
+                   bottom-right)))
+      (multiple-value-bind (a b)
+          ;; resolve corners (and any range name) in the TARGET sheet's namespace
+          (let ((*sheet* target)) (range-corners (if sheet-name tl top-left) br))
+        (let ((r0 (min (ref-row a) (ref-row b)))
+              (r1 (max (ref-row a) (ref-row b)))
+              (c0 (min (ref-col a) (ref-col b)))
+              (c1 (max (ref-col a) (ref-col b)))
+              (out '()))
+          (loop for r from r0 to r1 do
+            (loop for c from c0 to c1
+                  for ref = (make-ref r c)
+                  do (push (read-cell-value target ref) out)))
+          (nreverse out))))))
 
 ;;; --- aggregates -----------------------------------------------------
 
@@ -240,6 +299,10 @@ cells read by a formula."
     (return-from compute-cell (cell-value cell)))
   (let ((*eval-stack* (cons ref *eval-stack*))
         (*collected-precedents* (make-hash-table :test 'equal))
+        ;; only a workbook sheet can read across sheets — allocate the foreign
+        ;; table only then, so single-sheet compute stays allocation-clean.
+        (*collected-foreign* (and (sheet-workbook sheet)
+                                  (make-hash-table :test 'equal)))
         (old-value (cell-value cell))
         (old-err-p (and (cell-err cell) t)))
     ;; Commit the freshly observed precedents and back-links even when the
@@ -259,6 +322,10 @@ cells read by a formula."
                (setf (cell-err cell) wrapped (cell-value cell) nil)
                (error wrapped))))
       (update-dependency-links sheet ref cell *collected-precedents*)
+      ;; commit cross-sheet links too, when this sheet is in a workbook (or had
+      ;; foreign links to tear down after leaving one).
+      (when (or *collected-foreign* (cell-foreign-precedents cell))
+        (update-foreign-links sheet ref cell *collected-foreign*))
       ;; mark computed-this-sweep (success or stored error) so readers and
       ;; the recompute loop reuse the result instead of recomputing.
       (when *fresh* (setf (gethash ref *fresh*) t))
@@ -283,3 +350,48 @@ cells read by a formula."
       (let ((c (ensure-cell sheet p)))
         (pushnew ref (cell-dependents c) :test 'equal)))
     (setf (cell-precedents cell) new-precs)))
+
+;;; --- cross-sheet dependency links -----------------------------------
+;;;
+;;; A gref (global ref) is a (sheet . ref) cons naming a cell in a specific
+;;; sheet. A consumer cell's FOREIGN-PRECEDENTS list holds the grefs it reads
+;;; elsewhere; each producer sheet's FOREIGN-DEPENDENTS table maps a local ref to
+;;; the consumer grefs that read it. The two are kept in sync so the cascade can,
+;;; from a changed producer cell, find exactly the foreign consumers to refresh.
+
+(defun gref= (a b)
+  "Equality on grefs: same sheet (identity) and same ref."
+  (and (eq (car a) (car b)) (equal (cdr a) (cdr b))))
+
+(defun %add-foreign-dependent (producer-sheet producer-ref consumer-gref)
+  (pushnew consumer-gref
+           (gethash producer-ref (sheet-foreign-dependents producer-sheet))
+           :test #'gref=))
+
+(defun %remove-foreign-dependent (producer-sheet producer-ref consumer-gref)
+  (let* ((table (sheet-foreign-dependents producer-sheet))
+         (rest (remove consumer-gref (gethash producer-ref table) :test #'gref=)))
+    (if rest
+        (setf (gethash producer-ref table) rest)
+        (remhash producer-ref table))))
+
+(defun update-foreign-links (sheet ref cell new-foreign-table)
+  "Reconcile CELL's cross-sheet precedents with NEW-FOREIGN-TABLE (grefs it read
+this compute, or NIL for none): drop stale producer back-links, add current ones."
+  (let ((self (cons sheet ref))
+        (new-grefs (and new-foreign-table
+                        (loop for g being the hash-keys of new-foreign-table
+                              collect g))))
+    (dolist (old (cell-foreign-precedents cell))
+      (unless (and new-foreign-table (gethash old new-foreign-table))
+        (%remove-foreign-dependent (car old) (cdr old) self)))
+    (dolist (g new-grefs)
+      (%add-foreign-dependent (car g) (cdr g) self))
+    (setf (cell-foreign-precedents cell) new-grefs)))
+
+(defun detach-foreign (sheet ref cell)
+  "Drop all of CELL's cross-sheet producer back-links (used when clearing it)."
+  (let ((self (cons sheet ref)))
+    (dolist (old (cell-foreign-precedents cell))
+      (%remove-foreign-dependent (car old) (cdr old) self))
+    (setf (cell-foreign-precedents cell) '())))

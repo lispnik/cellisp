@@ -127,6 +127,8 @@ they still read it)."
             (let ((c (find-cell sheet p)))
               (when c (setf (cell-dependents c)
                             (remove ref (cell-dependents c) :test 'equal)))))
+          ;; and from any cross-sheet producers we read
+          (when (cell-foreign-precedents cell) (detach-foreign sheet ref cell))
           (remhash ref (sheet-cells sheet))
           (remhash ref (sheet-volatiles sheet)) ; drop from the volatile registry
           ;; the cleared cell won't recompute itself, so report it explicitly.
@@ -206,11 +208,13 @@ in arrival order)."
       (dolist (r refs) (visit r)))
     (nreverse order)))
 
-(defun recompute-closure (sheet seeds &key extra-changed)
-  "Recompute SEEDS and the changed part of their dependent cone. Volatile cells
-are folded into the seeds so they refresh every sweep. EXTRA-CHANGED lists refs
-to force into the change set reported to the sheet's change hook even though they
-weren't recomputed here (e.g. a cell CLEAR-CELL just removed)."
+(defun recompute-local (sheet seeds &key extra-changed)
+  "One local recompute sweep on SHEET: recompute SEEDS and the changed part of
+their dependent cone (volatile cells folded into the seeds). EXTRA-CHANGED lists
+refs to force into the change set even though they weren't recomputed here (e.g.
+a cell CLEAR-CELL just removed). Returns the list of local refs whose value or
+error changed this sweep (NIL when neither a change hook nor a workbook needs
+it), and fires SHEET's change hook with that set, row-major sorted."
   (let* ((*sheet* sheet)
          (*fresh* (make-hash-table :test 'equal))
          (*changed* (make-hash-table :test 'equal))
@@ -241,18 +245,85 @@ weren't recomputed here (e.g. a cell CLEAR-CELL just removed)."
                    (when (and cell (null (cell-err cell)))
                      (cell-swept cell sheet ref)))))
              *fresh*)
-    ;; finally, hand the UI (or any listener) the exact repaint set: refs whose
-    ;; value/error changed this sweep, plus any EXTRA-CHANGED (e.g. cleared
-    ;; cells). Gathered only when a hook is installed, so the hot path pays
-    ;; nothing otherwise.
+    ;; finally, gather the exact change set: refs whose value/error changed this
+    ;; sweep, plus any EXTRA-CHANGED (e.g. cleared cells). Needed for the UI
+    ;; repaint hook and for cross-sheet propagation; when neither applies, skip
+    ;; the gather entirely so the single-sheet hot path pays nothing.
     (let ((hook (sheet-change-hook sheet)))
-      (when hook
+      (when (or hook (sheet-workbook sheet))
         (let ((changed '()))
           (maphash (lambda (ref present) (declare (ignore present))
                      (push ref changed))
                    *changed*)
           (dolist (r extra-changed) (pushnew r changed :test #'equal))
-          (funcall hook (sort changed #'ref-lessp)))))))
+          (setf changed (sort changed #'ref-lessp))
+          (when hook (funcall hook changed))
+          changed)))))
+
+(defun recompute-closure (sheet seeds &key extra-changed)
+  "Recompute SEEDS on SHEET, then — if SHEET is in a workbook — cascade the
+resulting changes to cross-sheet consumers to a fixpoint. The public mutators all
+funnel through here, so every edit path both repaints (via the change hook) and
+propagates across sheets."
+  (let ((changed (recompute-local sheet seeds :extra-changed extra-changed)))
+    (when (sheet-workbook sheet)
+      (cascade-foreign sheet changed))
+    changed))
+
+(defun %foreign-work (sheet changed)
+  "For the CHANGED local refs of SHEET, group the foreign consumers to refresh as
+an ordered alist (consumer-sheet . refs)."
+  (let ((by-sheet (make-hash-table :test 'eq)) (order '()))
+    (dolist (r changed)
+      (dolist (g (gethash r (sheet-foreign-dependents sheet)))
+        (let ((cs (car g)) (cr (cdr g)))
+          (unless (gethash cs by-sheet) (push cs order))
+          (pushnew cr (gethash cs by-sheet) :test #'equal))))
+    (loop for cs in (nreverse order) collect (cons cs (gethash cs by-sheet)))))
+
+(defun cascade-foreign (origin changed)
+  "Propagate CHANGED cells of ORIGIN across sheet boundaries: recompute their
+foreign consumers, then those consumers' consumers, to a fixpoint. Producers are
+always recomputed before consumers, so cross-sheet reads see settled values. A
+per-cell revisit cap breaks cross-sheet reference cycles — cells that exceed it
+are flagged with a CYCLIC-REFERENCE error rather than looping forever."
+  (let ((queue (%foreign-work origin changed))
+        (visits (make-hash-table :test 'equal))
+        ;; a value in an N-sheet acyclic graph is recomputed at most ~N times;
+        ;; anything past that is a genuine cross-sheet cycle.
+        (cap (+ 2 (workbook-sheet-count (sheet-workbook origin)))))
+    (loop while queue do
+      (let ((batch queue))
+        (setf queue '())
+        (dolist (item batch)
+          (let ((tsheet (car item)) (live '()) (cyclic '()))
+            (dolist (r (cdr item))
+              (let* ((g (cons tsheet r))
+                     (n (1+ (gethash g visits 0))))
+                (setf (gethash g visits) n)
+                (if (<= n cap) (push r live) (push r cyclic))))
+            (when cyclic (%flag-cross-cycle tsheet cyclic))
+            (when live
+              (let ((tchanged (recompute-local tsheet live)))
+                (setf queue (append queue (%foreign-work tsheet tchanged)))))))))))
+
+(defun %flag-cross-cycle (sheet refs)
+  "Mark REFS in SHEET as participating in a cross-sheet reference cycle."
+  (dolist (r refs)
+    (let ((cell (find-cell sheet r)))
+      (when cell
+        (setf (cell-err cell) (make-condition 'cyclic-reference :cells (list r))
+              (cell-value cell) nil))))
+  (let ((hook (sheet-change-hook sheet)))
+    (when hook (funcall hook (sort (copy-list refs) #'ref-lessp)))))
+
+(defun recompute-workbook (workbook)
+  "Recompute every sheet in WORKBOOK to a cross-sheet fixpoint. Used after
+loading, when all sheets and their cross-references are finally in place."
+  (dotimes (_ (max 2 (1+ (workbook-sheet-count workbook))))
+    (dolist (s (workbook-sheets workbook))
+      (recalc-all s)))
+  (values))
 
 (defun recalc (sheet designator)
   "Force recomputation of one cell and its dependents."
