@@ -377,6 +377,47 @@
     (set-readonly s "A1" t)
     (check-signals readonly-cell (set-external s "A1" (lambda () 9))))
 
+  ;; logged-mixin: records the value history, collapsing consecutive dups
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (set-cell s "A2" '(* 10 (cell "A1")))
+    (set-logged s "A2" t)
+    (set-cell s "A1" 2)                   ; A2 -> 20
+    (set-cell s "A1" 2)                   ; A2 -> 20 again (not re-logged)
+    (set-cell s "A1" 3)                   ; A2 -> 30
+    (check (cell-log s "A2") '(20 30)))   ; oldest first, deduped
+
+  ;; logged + observable both hook CELL-SWEPT (an :after and a primary method)
+  ;; and BOTH fire — composition via CLOS method combination, not override.
+  (let ((s (make-sheet)) (log '()))
+    (set-cell s "A1" 1)
+    (set-cell s "A2" '(* 10 (cell "A1")))
+    (observe s "A2" (lambda (v) (push v log)))   ; primary cell-swept
+    (set-logged s "A2" t)                        ; :after cell-swept
+    (let ((cell (cellisp::find-cell s (parse-ref "A2"))))
+      (check (typep cell 'observable-mixin) t)
+      (check (typep cell 'logged-mixin) t))
+    (set-cell s "A1" 4)                          ; A2 -> 40
+    (check (first log) 40)                        ; observer fired
+    (check (cell-log s "A2") '(40)))              ; logger recorded
+
+  ;; three mixins on one cell at once: observable + readonly + logged, all
+  ;; active while the cell recomputes from its precedent.
+  (let ((s (make-sheet)) (log '()))
+    (set-cell s "B1" 1)
+    (set-cell s "A1" '(* 100 (cell "B1")))
+    (observe s "A1" (lambda (v) (push v log)))
+    (set-readonly s "A1" t)
+    (set-logged s "A1" t)
+    (let ((c (cellisp::find-cell s (parse-ref "A1"))))
+      (check (typep c 'observable-mixin) t)
+      (check (typep c 'readonly-mixin) t)
+      (check (typep c 'logged-mixin) t))
+    (check-signals readonly-cell (set-cell s "A1" 0))   ; readonly guards
+    (set-cell s "B1" 2)                                 ; A1 -> 200 (recompute)
+    (check (first log) 200)                              ; observer fired
+    (check (cell-log s "A1") '(200)))                    ; logger recorded
+
   ;; live redefinition: adding a slot migrates existing instances — the CLOS
   ;; capability that motivates CELL being a class rather than a struct.
   (progn

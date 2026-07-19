@@ -75,12 +75,29 @@ Dispatches on a different generic than OBSERVABLE-MIXIN, so the two compose."))
 
 (defmethod cell-writable-p ((cell readonly-mixin)) nil)
 
+;;; --- logging mixin (an :AFTER method on CELL-SWEPT) -----------------
+
+(defclass logged-mixin ()
+  ((history :initform '() :accessor cell-history))
+  (:documentation "Mixin recording a cell's value history (most recent first,
+consecutive duplicates collapsed). It hooks CELL-SWEPT with an :AFTER method
+rather than a primary one, so it stacks with OBSERVABLE-MIXIN's primary
+CELL-SWEPT via method combination — both fire — demonstrating that two mixins
+can share a generic without colliding. Read the history with CELL-LOG."))
+
+(defmethod cell-swept :after ((cell logged-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (let ((v (cell-value cell)))
+    (when (or (null (cell-history cell))
+              (not (equal v (first (cell-history cell)))))
+      (push v (cell-history cell)))))
+
 ;;; --- composing value source + mixins --------------------------------
 
 (defparameter *value-source-classes* '(external-cell async-cell cell)
   "Value-source cell classes, most specific first; a cell has exactly one.")
 
-(defparameter *mixin-classes* '(observable-mixin readonly-mixin)
+(defparameter *mixin-classes* '(observable-mixin readonly-mixin logged-mixin)
   "Known composable behavior mixins. Add a new cross-cutting axis by defining
 a mixin (overriding some generic) and listing it here.")
 
@@ -203,6 +220,25 @@ escape hatch and is never blocked."
           (add-mixin cell 'readonly-mixin)
           (remove-mixin cell 'readonly-mixin)))
     readonly))
+
+(defun set-logged (sheet designator logged)
+  "Start (or stop) recording DESIGNATOR's value history. Composes with any
+value source or other mixin; read the history back with CELL-LOG."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (if logged
+          (add-mixin cell 'logged-mixin)
+          (remove-mixin cell 'logged-mixin)))
+    logged))
+
+(defun cell-log (sheet designator)
+  "DESIGNATOR's recorded value history, oldest first (empty unless the cell is
+logged; consecutive duplicate values are collapsed)."
+  (with-sheet-lock (sheet)
+    (let ((cell (find-cell sheet (parse-ref designator))))
+      (if (typep cell 'logged-mixin)
+          (reverse (cell-history cell))
+          '()))))
 
 ;;; --- drivers: observation -------------------------------------------
 
