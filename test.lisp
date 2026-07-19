@@ -9,6 +9,11 @@
 (defvar *vcount* 0)  ; volatile-cell recompute counter
 (defvar *pcount* 0)  ; plain-cell recompute counter (contrast)
 
+;; test-only mixins for the COMBINED-CLASS multi-mixin test (top level so
+;; their types are known when RUN-TESTS is compiled)
+(defclass demo-mixin-a () ((xa :initform :a)))
+(defclass demo-mixin-b () ((xb :initform :b)))
+
 (defmacro check (form expected &optional (test '#'equal))
   `(progn
      (incf *count*)
@@ -293,6 +298,46 @@
     (check (and (member (parse-ref "A1") (precedents s "A2") :test 'equal) t) t)
     (set-cell s "A1" 7)
     (check (get-value s "A2") 14))                         ; still recomputes
+
+  ;; COMBINED-CLASS generalizes to any number of mixins, order-independent:
+  ;; a set of mixins over a base maps to one memoized class regardless of the
+  ;; order given, and instances are TYPEP every constituent. (DEMO-MIXIN-A/B
+  ;; are defined at top level, below.)
+  (let ((c1 (cellisp::combined-class
+             'cell '(demo-mixin-a demo-mixin-b observable-mixin)))
+        (c2 (cellisp::combined-class
+             'cell '(observable-mixin demo-mixin-b demo-mixin-a))))
+    (check (eq c1 c2) t)                                   ; permutation -> one class
+    (let ((inst (make-instance c1)))
+      (check (typep inst 'demo-mixin-a) t)
+      (check (typep inst 'demo-mixin-b) t)
+      (check (typep inst 'observable-mixin) t)
+      (check (typep inst 'cell) t)))
+
+  ;; a value-source change PRESERVES existing mixins: observe a plain cell,
+  ;; then make it external — it stays observable and becomes external.
+  (let ((s (make-sheet)) (feed 3) (log '()))
+    (set-cell s "A1" 0)
+    (observe s "A1" (lambda (v) (push v log)))            ; observable + cell
+    (set-external s "A1" (lambda () feed))                ; -> observable + external
+    (let ((cell (cellisp::find-cell s (parse-ref "A1"))))
+      (check (typep cell 'observable-mixin) t)            ; mixin kept
+      (check (typep cell 'external-cell) t))              ; source changed
+    (recalc s "A1")
+    (check (get-value s "A1") 3)
+    (check (first log) 3))                                 ; still notifies
+
+  ;; unobserving the last subscriber drops OBSERVABLE-MIXIN (via REMOVE-MIXIN),
+  ;; leaving the value source intact.
+  (let ((s (make-sheet)) (cb (lambda (v) (declare (ignore v)))))
+    (set-external s "A1" (lambda () 9))
+    (observe s "A1" cb)
+    (check (typep (cellisp::find-cell s (parse-ref "A1")) 'observable-mixin) t)
+    (unobserve s "A1" cb)
+    (let ((cell (cellisp::find-cell s (parse-ref "A1"))))
+      (check (typep cell 'observable-mixin) nil)          ; mixin removed
+      (check (typep cell 'external-cell) t))              ; source preserved
+    (check (get-value s "A1") 9))
 
   ;; live redefinition: adding a slot migrates existing instances — the CLOS
   ;; capability that motivates CELL being a class rather than a struct.
