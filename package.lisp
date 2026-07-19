@@ -38,6 +38,8 @@
    ;; structural editing + copy/paste
    #:insert-row #:delete-row #:insert-column #:delete-column
    #:copy-cell #:fill-range
+   ;; named cells
+   #:set-name #:remove-name #:name-ref
    ;; introspection
    #:dependents #:precedents #:map-cells #:volatile-refs
    ;; conditions

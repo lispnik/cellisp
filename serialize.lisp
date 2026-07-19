@@ -86,6 +86,11 @@ and closure-based config are not written."
             ;; copy the alist so a caller editing the form can't mutate the
             ;; sheet's live environment (or a shared quoted constant)
             :environment (copy-alist (sheet-environment sheet))
+            :names (let ((acc '()))
+                     (maphash (lambda (name ref)
+                                (push (cons name (ref-string ref)) acc))
+                              (sheet-names sheet))
+                     acc)
             :cells (nreverse cells)))))
 
 (defun form->sheet (form)
@@ -93,9 +98,11 @@ and closure-based config are not written."
   (unless (and (consp form) (eq (car form) :cellisp-sheet))
     (error 'sheet-error :format-control "Not a cellisp sheet form: ~S"
                         :format-arguments (list form)))
-  (destructuring-bind (&key version environment cells &allow-other-keys) (cdr form)
+  (destructuring-bind (&key version environment names cells &allow-other-keys)
+      (cdr form)
     (declare (ignore version))
     (let ((sheet (make-sheet :environment environment)))
+      (dolist (pair names) (set-name sheet (car pair) (cdr pair)))
       ;; 1. create cells and apply value-wrapping / source config FIRST, so
       ;;    they are active when the formulas recompute below.
       (dolist (pl cells)

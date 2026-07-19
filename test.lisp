@@ -242,6 +242,35 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (check (get-value s "B2") 20)                        ; A2*10
     (check (get-value s "B3") 30))
 
+  ;; named cells: a name aliases a ref and resolves in formulas
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10)
+    (set-name s "price" "A1")
+    (set-cell s "B1" '(* (cell "price") 2))              ; formula uses the name
+    (check (get-value s "B1") 20)
+    (check (name-ref s "price") '(0 . 0))
+    (set-cell s "A1" 15)                                 ; edit via the ref
+    (check (get-value s "B1") 30))                       ; name tracks the cell
+
+  ;; a name follows its target cell across a structural edit
+  (let ((s (make-sheet)))
+    (set-cell s "A2" 7)
+    (set-name s "total" "A2")
+    (set-cell s "B1" '(cell "total"))                   ; = 7
+    (insert-row s 1)                                     ; A2 -> A3, B1 -> B2
+    (check (name-ref s "total") '(2 . 0))               ; name retargeted to A3
+    (check (get-value s "B2") 7))                        ; still reads "total"
+
+  ;; names round-trip through serialization
+  (let ((s1 (make-sheet)))
+    (set-cell s1 "A1" 5)
+    (set-name s1 "x" "A1")
+    (set-cell s1 "A2" '(+ (cell "x") 1))                ; 6
+    (let* ((text (with-output-to-string (o) (write-sheet s1 o)))
+           (s2 (with-input-from-string (i text) (read-sheet i))))
+      (check (name-ref s2 "x") '(0 . 0))
+      (check (get-value s2 "A2") 6)))
+
   ;; set-cells: install a whole batch, then one sweep. Forward references
   ;; in any order resolve with no transient error; the return value is the
   ;; list of resulting values in input order; a later pair for a cell wins.

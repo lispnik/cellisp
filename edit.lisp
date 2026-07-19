@@ -75,6 +75,16 @@ deleted refs)."
              table)
     new))
 
+(defun shift-name-table (table shift-fn)
+  "A copy of the name -> ref TABLE with each *value* (ref) mapped through
+SHIFT-FN (dropping names whose target was deleted)."
+  (let ((new (make-hash-table :test 'equal)))
+    (maphash (lambda (name ref)
+               (let ((nref (funcall shift-fn ref)))
+                 (unless (eq nref :deleted) (setf (gethash name new) nref))))
+             table)
+    new))
+
 (defun structural-edit (sheet shift-fn)
   "Apply SHIFT-FN (a ref -> ref-or-:deleted map) to SHEET: rewrite static refs
 in every formula, move cells to their shifted keys (dropping deleted ones),
@@ -95,7 +105,9 @@ values via RECALC-ALL."
                (sheet-cells sheet))
       (setf (sheet-cells sheet) new
             (sheet-volatiles sheet) (shift-registry (sheet-volatiles sheet) shift-fn)
-            (sheet-frozen sheet)    (shift-registry (sheet-frozen sheet) shift-fn))
+            (sheet-frozen sheet)    (shift-registry (sheet-frozen sheet) shift-fn)
+            ;; named aliases follow their target cell (dropped if it's deleted)
+            (sheet-names sheet)     (shift-name-table (sheet-names sheet) shift-fn))
       (recalc-all sheet)))
   (values))
 

@@ -64,6 +64,8 @@
   (volatiles (make-hash-table :test 'equal) :type hash-table)
   ;; Set of refs held frozen (COMPUTE-CELL skips them; see there).
   (frozen (make-hash-table :test 'equal) :type hash-table)
+  ;; Named-cell aliases: upcased name string -> ref. RESOLVE-REF consults it.
+  (names (make-hash-table :test 'equal) :type hash-table)
   ;; Serializes all public access to this sheet (see comment above).
   (lock (bt:make-recursive-lock "cellisp-sheet")))
 
@@ -108,3 +110,23 @@ registry — any kind of cell can be volatile."
   "True if DESIGNATOR is frozen (held at its value, not recomputed)."
   (with-sheet-lock (sheet)
     (and (gethash (parse-ref designator) (sheet-frozen sheet)) t)))
+
+(defun %name-key (name) (string-upcase (string name)))
+
+(defun set-name (sheet name designator)
+  "Bind NAME (a string or symbol, case-insensitive) as an alias for the cell at
+DESIGNATOR, so formulas may write (cell NAME). Returns NAME."
+  (with-sheet-lock (sheet)
+    (setf (gethash (%name-key name) (sheet-names sheet)) (parse-ref designator))
+    name))
+
+(defun remove-name (sheet name)
+  "Remove the alias NAME."
+  (with-sheet-lock (sheet)
+    (remhash (%name-key name) (sheet-names sheet)))
+  (values))
+
+(defun name-ref (sheet name)
+  "The ref NAME aliases, or NIL."
+  (with-sheet-lock (sheet)
+    (gethash (%name-key name) (sheet-names sheet))))

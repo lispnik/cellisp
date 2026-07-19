@@ -43,18 +43,29 @@ deterministic tests.")
   (when *collected-precedents*
     (setf (gethash ref *collected-precedents*) t)))
 
+(defun resolve-ref (designator)
+  "Resolve DESIGNATOR to a ref: a registered name on *SHEET* takes precedence,
+otherwise it is parsed as an A1 reference. The name lookup is skipped entirely
+when the sheet has no names, keeping the hot path fast."
+  (or (and *sheet*
+           (plusp (hash-table-count (sheet-names *sheet*)))
+           (typep designator '(or string symbol))
+           (gethash (%name-key designator) (sheet-names *sheet*)))
+      (parse-ref designator)))
+
 (defun cell (designator)
   "Read another cell's value. Records the dependency and forces the
-referenced cell to be up to date (depth-first, with cycle detection)."
-  (let ((ref (parse-ref designator)))
+referenced cell to be up to date (depth-first, with cycle detection).
+DESIGNATOR may be a registered name as well as an A1 ref."
+  (let ((ref (resolve-ref designator)))
     (note-precedent ref)
     (evaluate-ref *sheet* ref)))
 
 (defun cells (top-left bottom-right)
   "Return a list of the values in the rectangle spanned by the two
 corner designators, row-major."
-  (let* ((a (parse-ref top-left))
-         (b (parse-ref bottom-right))
+  (let* ((a (resolve-ref top-left))
+         (b (resolve-ref bottom-right))
          (r0 (min (ref-row a) (ref-row b)))
          (r1 (max (ref-row a) (ref-row b)))
          (c0 (min (ref-col a) (ref-col b)))
