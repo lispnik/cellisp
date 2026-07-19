@@ -36,11 +36,11 @@
 ;;;; Sheet
 ;;;; ------------------------------------------------------------------
 
-;;; A sheet is NOT thread-safe: recalculation drives mutable state through
-;;; dynamic vars (*sheet*, *eval-stack*, *fresh*, *collected-precedents*)
-;;; and mutates the CELLS table plus per-cell adjacency lists in place, with
-;;; no locking. Confine all access to one sheet to a single thread, or wrap
-;;; the mutators (SET-CELL/SET-CELLS/CLEAR-CELL) and reads in your own lock.
+;;; A sheet mutates shared state in place (the CELLS table, per-cell adjacency
+;;; lists) through dynamic vars. Every public entry point takes the sheet's
+;;; recursive LOCK so concurrent readers/writers — and out-of-band async
+;;; deliveries from other threads — are serialized. The lock is recursive so a
+;;; callback fired mid-sweep (e.g. an observer) may re-enter the read API.
 
 (defstruct (sheet (:constructor %make-sheet))
   ;; ref-cons -> cell. Refs are equal-comparable conses, so use EQUAL.
@@ -49,7 +49,13 @@
   (environment '() :type list)
   ;; Set of refs whose cells are volatile (recompute every sweep). Kept as a
   ;; registry so RECOMPUTE-CLOSURE can seed them without scanning all cells.
-  (volatiles (make-hash-table :test 'equal) :type hash-table))
+  (volatiles (make-hash-table :test 'equal) :type hash-table)
+  ;; Serializes all public access to this sheet (see comment above).
+  (lock (bt:make-recursive-lock "cellisp-sheet")))
+
+(defmacro with-sheet-lock ((sheet) &body body)
+  "Run BODY holding SHEET's recursive lock."
+  `(bt:with-recursive-lock-held ((sheet-lock ,sheet)) ,@body))
 
 (defun make-sheet (&key environment)
   "Create an empty sheet. ENVIRONMENT is an alist of (symbol . value)

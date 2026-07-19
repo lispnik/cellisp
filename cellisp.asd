@@ -2,12 +2,14 @@
   :description "A spreadsheet backend whose formula language is Common Lisp."
   :version "0.1.0"
   :license "MIT"
+  :depends-on ("bordeaux-threads")
   :serial t
   :components ((:file "package")
                (:file "cell")
                (:file "sheet")
                (:file "eval")
-               (:file "api"))
+               (:file "api")
+               (:file "taxonomy"))
   :in-order-to ((test-op (test-op "cellisp/test"))))
 
 (defsystem "cellisp/test"

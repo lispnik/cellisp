@@ -209,6 +209,91 @@
       (check v nil)
       (check (and e t) t)))
 
+  ;; external cell: value comes from a thunk, re-pulled on recompute
+  (let ((s (make-sheet)) (feed 10))
+    (set-external s "A1" (lambda () feed))
+    (set-cell s "A2" '(* 2 (cell "A1")))
+    (check (get-value s "A1") 10)
+    (check (get-value s "A2") 20)
+    (setf feed 15)
+    (recalc s "A1")                       ; re-pull the source
+    (check (get-value s "A1") 15)
+    (check (get-value s "A2") 30))         ; dependent followed
+
+  ;; async cell: non-blocking read of the last value; DELIVER-ASYNC pushes a
+  ;; new value out-of-band and recomputes dependents.
+  (let ((s (make-sheet)) (captured nil))
+    (set-async s "A1" (lambda (deliver) (setf captured deliver)) :initial 0)
+    (set-cell s "A2" '(+ 100 (cell "A1")))
+    (check (get-value s "A1") 0)          ; initial
+    (check (get-value s "A2") 100)
+    (refresh-async s "A1")                ; fetcher stashes the callback
+    (check (get-value s "A1") 0)          ; still last value (non-blocking)
+    (funcall captured 42)                 ; the value "arrives"
+    (check (get-value s "A1") 42)
+    (check (get-value s "A2") 142))       ; dependent recomputed
+
+  ;; async delivery from a real worker thread, serialized by the sheet lock
+  (let ((s (make-sheet)) (th nil))
+    (set-async s "B1"
+               (lambda (deliver)
+                 (setf th (bt:make-thread (lambda () (funcall deliver 7)))))
+               :initial 0)
+    (set-cell s "B2" '(* 10 (cell "B1")))
+    (refresh-async s "B1")
+    (bt:join-thread th)                   ; wait for the delivery to land
+    (check (get-value s "B1") 7)
+    (check (get-value s "B2") 70))
+
+  ;; observed cell: subscribers fire after a sweep only when the value changed
+  (let* ((s (make-sheet)) (log '())
+         (cb (lambda (v) (push v log))))
+    (set-cell s "A1" 1)
+    (set-cell s "A2" '(* 10 (cell "A1")))
+    (observe s "A2" cb)
+    (set-cell s "A1" 2) (check (first log) 20)    ; A2 20 -> notify
+    (set-cell s "A1" 2) (check (length log) 1)    ; unchanged -> no notify
+    (set-cell s "A1" 3) (check (first log) 30) (check (length log) 2)
+    (unobserve s "A2" cb)
+    (set-cell s "A1" 4) (check (length log) 2))   ; unobserved -> silent
+  ;; a non-plain cell can't be observed in this prototype
+  (let ((s (make-sheet)))
+    (set-external s "A1" (lambda () 5))
+    (check-signals sheet-error (observe s "A1" (lambda (v) (declare (ignore v))))))
+
+  ;; change-class morphs a cell in place, preserving value and links
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 5)
+    (set-cell s "A2" '(* 2 (cell "A1")))
+    (observe s "A2" (lambda (v) (declare (ignore v))))   ; plain -> observed-cell
+    (check (typep (cellisp::find-cell s (parse-ref "A2")) 'observed-cell) t)
+    (check (get-value s "A2") 10)                          ; value survived
+    (check (and (member (parse-ref "A1") (precedents s "A2") :test 'equal) t) t)
+    (set-cell s "A1" 7)
+    (check (get-value s "A2") 14))                         ; still recomputes
+
+  ;; live redefinition: adding a slot migrates existing instances — the CLOS
+  ;; capability that motivates CELL being a class rather than a struct.
+  (progn
+    (defclass redef-demo (cell) ((a :initform 1)))
+    (let ((inst (make-instance 'redef-demo)))
+      (check (slot-value inst 'a) 1)
+      (defclass redef-demo (cell)                          ; redefine with slot B
+        ((a :initform 1) (b :initform 99)))
+      (check (slot-value inst 'b) 99)     ; old instance gained B via migration
+      (check (slot-value inst 'a) 1)))    ; and kept A
+
+  ;; the sheet lock serializes concurrent writers without corrupting the graph
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 0)
+    (set-cell s "A2" '(cell "A1"))
+    (let ((threads (loop repeat 8 collect
+                         (bt:make-thread
+                          (lambda () (dotimes (i 100) (set-cell s "A1" i)))))))
+      (mapc #'bt:join-thread threads))
+    (check (integerp (get-value s "A1")) t)
+    (check (numberp (get-value s "A2")) t))
+
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Test failures: ~D" *fails*))
   t)

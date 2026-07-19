@@ -129,6 +129,29 @@ self-evaluate."
             (funcall (cell-thunk cell sheet formula))
             (eval formula)))))
 
+;;; --- per-class extension points -------------------------------------
+;;;
+;;; COMPUTE-VALUE is the seam by which a cell subclass produces its value:
+;;; the base cell evaluates its formula, but external/async cells override
+;;; it. Reads of other cells inside a method go through CELL/CELLS, so
+;;; precedent tracking works regardless of how the value is produced.
+;;;
+;;; CELL-SWEPT is called once per cell that was (re)computed in a sweep,
+;;; after the sweep's compute loop finishes — the hook observed cells use to
+;;; fire change notifications on settled values. Both default to inert.
+
+(defgeneric compute-value (cell sheet ref)
+  (:documentation "Produce and return CELL's current value.")
+  (:method ((cell cell) sheet ref)
+    (declare (ignore ref))
+    (eval-formula sheet cell)))
+
+(defgeneric cell-swept (cell sheet ref)
+  (:documentation "Called after a sweep for each cell computed in it.")
+  (:method ((cell cell) sheet ref)
+    (declare (ignore sheet ref))
+    nil))
+
 ;;; --- the recalculation core -----------------------------------------
 
 (defun evaluate-ref (sheet ref)
@@ -164,7 +187,7 @@ cells read by a formula."
     ;; graph on error would never be revisited when its inputs recover.
     (unwind-protect
          (handler-case
-             (let ((val (eval-formula sheet cell)))
+             (let ((val (compute-value cell sheet ref)))
                (setf (cell-value cell) val
                      (cell-err cell) nil))
            (sheet-error (e)

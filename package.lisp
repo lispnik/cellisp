@@ -13,8 +13,15 @@
    ;; recalculation
    #:recalc #:recalc-all
    ;; cell classes (note: CELL the class shares its symbol with the CELL
-   ;; formula reader, already exported below)
+   ;; formula reader, already exported below) and their extension points
    #:volatile-cell #:volatile-p
+   #:external-cell #:async-cell #:observed-cell
+   #:compute-value #:cell-swept
+   ;; cell-kind constructors / drivers
+   #:set-external #:set-async #:refresh-async #:deliver-async
+   #:observe #:unobserve
+   ;; concurrency
+   #:with-sheet-lock
    ;; introspection
    #:dependents #:precedents #:map-cells #:volatile-refs
    ;; conditions
