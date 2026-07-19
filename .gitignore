@@ -1,0 +1,7 @@
+# Compiled Lisp artifacts (ASDF builds into ~/.cache; these only appear from a
+# manual compile-file in-tree).
+*.fasl
+*.fas
+*.lx64fsl
+*.o
+*.a
