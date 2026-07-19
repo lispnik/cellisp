@@ -1011,6 +1011,25 @@
         (check (get-value s2 "A3") 700)                   ; recovered
         (check (get-value s2 "B1") 70))))                 ; dependent recovered
 
+  ;; a formula referencing a cell not in the sheet loads with an UNBOUND-CELL
+  ;; error per-cell; SUPPLYING the missing cell (not editing the formula)
+  ;; recovers it, via the committed link to the empty precedent.
+  (let ((s1 (make-sheet :environment '((tax . 1/10)))))
+    (set-cells s1 '(("A1" 1000) ("A2" 300)
+                    ("A3" (- (cell "A1") (cell "A2")))
+                    ("B1" (* (cell "A3") tax))))
+    (let ((form (sheet->form s1)))
+      (dolist (pl (getf (cdr form) :cells))               ; A3 references missing Z9
+        (when (equal (getf pl :ref) "A3")
+          (setf (getf pl :formula) '(+ (cell "A1") (cell "Z9")))))
+      (let ((s2 (form->sheet form)))
+        (check (get-value s2 "A1") 1000)                  ; unrelated cells fine
+        (check (typep (nth-value 1 (get-value s2 "A3")) 'unbound-cell) t)
+        (check (typep (nth-value 1 (get-value s2 "B1")) 'unbound-cell) t)
+        (set-cell s2 "Z9" 500)                            ; supply the missing cell
+        (check (get-value s2 "A3") 1500)                  ; recovered (1000 + 500)
+        (check (get-value s2 "B1") 150))))                ; dependent recovered
+
   ;; save-sheet / load-sheet round-trip through an actual file
   (let ((path (merge-pathnames "cellisp-roundtrip-test.sheet"
                                (uiop:temporary-directory)))
