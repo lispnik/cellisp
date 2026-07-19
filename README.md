@@ -1,5 +1,7 @@
 # Cellisp
 
+[![CI](https://github.com/lispnik/cellisp/actions/workflows/ci.yml/badge.svg)](https://github.com/lispnik/cellisp/actions/workflows/ci.yml)
+
 A spreadsheet **engine** whose formula language is Common Lisp itself.
 
 There is no UI and no formula DSL to learn: a cell's formula is either a literal
