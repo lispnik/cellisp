@@ -958,6 +958,20 @@
         (check (get-value s2 "A3") 2200)                  ; net recomputed
         (check (get-value s2 "B1") 220))))                ; tax recomputed
 
+  ;; the environment constant is serialized too (it is not a cell): editing it
+  ;; in the saved form and reloading reprices every formula that uses it.
+  (let ((s1 (make-sheet :environment '((tax . 1/10)))))
+    (set-cells s1 '(("A1" 200)                            ; price (a cell)
+                    ("B1" (* (cell "A1") tax))            ; tax due (uses constant)
+                    ("C1" (+ (cell "A1") (cell "B1")))))  ; total (derived)
+    (check (get-value s1 "B1") 20) (check (get-value s1 "C1") 220)
+    (let ((form (sheet->form s1)))
+      (setf (cdr (first (getf (cdr form) :environment))) 1/5)  ; tax 1/10 -> 1/5
+      (let ((s2 (form->sheet form)))
+        (check (get-value s2 "A1") 200)                   ; price unchanged
+        (check (get-value s2 "B1") 40)                    ; tax repriced
+        (check (get-value s2 "C1") 240))))                ; total repriced
+
   ;; save-sheet / load-sheet round-trip through an actual file
   (let ((path (merge-pathnames "cellisp-roundtrip-test.sheet"
                                (uiop:temporary-directory)))
