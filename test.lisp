@@ -177,6 +177,47 @@ the invariant always held."
   ;; random acyclic sheets and edit sequences (guards the short-circuit).
   (check (property-incremental=full) t)
 
+  ;; concurrent writers stressing the shared cells hash-table's GROWTH: each of
+  ;; N threads creates its own PER distinct cells (disjoint rows). Under the
+  ;; lock every insert survives; without it a concurrent rehash would drop
+  ;; cells or crash. Assert the exact count and that no cell is corrupt (a full
+  ;; RECALC-ALL changes nothing).
+  (let ((s (make-sheet)) (nthreads 8) (per 250))
+    (let ((threads (loop for tid below nthreads collect
+                         (let ((tid tid))
+                           (bt:make-thread
+                            (lambda ()
+                              (loop for i from 1 to per do
+                                (set-cell s (format nil "A~D" (+ (* tid 100000) i))
+                                          i))))))))
+      (mapc #'bt:join-thread threads))
+    (check (hash-table-count (cellisp::sheet-cells s)) (* nthreads per))
+    (let ((before (cells-snapshot s)))
+      (recalc-all s)
+      (check (equal before (cells-snapshot s)) t)))
+
+  ;; concurrent writers on SHARED, interdependent cells: whatever the
+  ;; interleaving, the dependency graph stays consistent and the derived sum
+  ;; equals its settled inputs.
+  (let ((s (make-sheet)) (k 20))
+    (loop for i from 1 to k do (set-cell s (format nil "A~D" i) 0))
+    (set-cell s "B1" `(sum (cells "A1" ,(format nil "A~D" k))))
+    (let ((threads (append
+                    (loop repeat 8 collect
+                          (bt:make-thread
+                           (lambda ()
+                             (dotimes (n 300)
+                               (set-cell s (format nil "A~D" (1+ (mod n k)))
+                                         (mod (* n 7) 100))))))
+                    (list (bt:make-thread
+                           (lambda () (dotimes (n 300) (get-value s "B1"))))))))
+      (mapc #'bt:join-thread threads))
+    (let ((before (cells-snapshot s)))
+      (recalc-all s)
+      (check (equal before (cells-snapshot s)) t))
+    (check (get-value s "B1")
+           (loop for i from 1 to k sum (get-value s (format nil "A~D" i)))))
+
   ;; explain-tree captures a cell's precedent structure and values
   (let ((s (make-sheet)))
     (set-cell s "A1" 10) (set-cell s "A2" 20)
