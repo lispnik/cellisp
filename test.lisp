@@ -658,6 +658,27 @@
       (check (cell-versions s "A1") '(7))              ; versioned recorded
       (check (getf (first (cell-audit s "A1")) :actor) "carol" #'string=)))
 
+  ;; throttled + audited on one cell dispatch on independent seams: every set
+  ;; is audited (NOTE-SET) while value-change alerts are throttled (CELL-SWEPT).
+  ;; One logical clock drives both the timestamps and the throttle window.
+  (let ((s (make-sheet)) (tick 0) (alerts '()))
+    (let ((*audit-clock* (lambda () tick)))
+      (set-audited s "A1" t)
+      (throttle s "A1" (lambda (v) (push (list tick v) alerts))
+                :interval 10 :clock (lambda () tick))
+      (flet ((adjust (who val) (with-actor (who) (set-cell s "A1" val))))
+        (setf tick 1)  (adjust "alice" 50)   ; change -> alert (leading edge)
+        (setf tick 3)  (adjust "bob"   60)   ; within window -> throttled
+        (setf tick 5)  (adjust "alice" 70)   ; within window -> throttled
+        (setf tick 15) (adjust "carol" 80))) ; window elapsed -> alert
+    (check (reverse alerts) '((1 50) (15 80)))         ; two alerts, four changes
+    (let ((trail (cell-audit s "A1")))
+      (check (length trail) 4)                          ; but all four audited
+      (check (getf (first trail) :actor) "alice" #'string=)
+      (check (getf (first trail) :time) 1)
+      (check (getf (fourth trail) :actor) "carol" #'string=)
+      (check (getf (fourth trail) :formula) 80)))
+
   ;; three composition modes at once: transformed (:around compute-value) +
   ;; observable (primary cell-swept) + stats (:after cell-swept).
   (let ((s (make-sheet)) (seen '()))
