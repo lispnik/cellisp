@@ -23,6 +23,7 @@
 (defun ser-sink (v) (push v *ser-sink*))
 (defvar *ser-obs* '())
 (defun ser-obs (v) (push v *ser-obs*))
+(defun ser-nonneg (v) (and (realp v) (>= v 0)))
 
 (defmacro check (form expected &optional (test '#'equal))
   `(progn
@@ -912,6 +913,35 @@
     (let* ((text (with-output-to-string (o) (write-sheet s1 o)))
            (s2 (with-input-from-string (i text) (read-sheet i))))
       (check (get-value s2 "A2") 3)))                      ; reloaded: transform lost
+
+  ;; comprehensive file round-trip: formulas + env + forward ref + protected
+  ;; cell + history (versions/audit with actors) + named validator, through a
+  ;; real file, still live afterward.
+  (let ((path (merge-pathnames "cellisp-budget-test.sheet"
+                               (uiop:temporary-directory)))
+        (s1 (make-sheet :environment '((tax . 1/10)))))
+    (set-versioned s1 "A1" t)
+    (set-audited s1 "A1" t)
+    (set-validator s1 "A2" 'ser-nonneg)
+    (set-cells s1 '(("A3" (- (cell "A1") (cell "A2")))    ; forward reference
+                    ("A1" 1000) ("A2" 300)
+                    ("B1" (* (cell "A3") tax))))
+    (set-readonly s1 "A3" t)
+    (with-actor ("alice") (set-cell s1 "A1" 1200))
+    (save-sheet s1 path)
+    (unwind-protect
+         (let ((s2 (load-sheet path)))
+           (check (get-value s2 "A3") 900)                 ; recomputed
+           (check (get-value s2 "B1") 90)                  ; env constant
+           (check (cell-versions s2 "A1") '(1000 1200))    ; history restored
+           (check (mapcar (lambda (e) (getf e :actor)) (cell-audit s2 "A1"))
+                  '(nil "alice"))                          ; provenance restored
+           (with-actor ("bob") (set-cell s2 "A1" 1500))    ; live: versioned records
+           (check (get-value s2 "A3") 1200)
+           (check (cell-versions s2 "A1") '(1000 1200 1500))
+           (check-signals readonly-cell (set-cell s2 "A3" 0))   ; readonly restored
+           (check-signals invalid-value (set-cell s2 "A2" -5))) ; validator restored
+      (when (probe-file path) (delete-file path))))
 
   ;; save-sheet / load-sheet round-trip through an actual file
   (let ((path (merge-pathnames "cellisp-roundtrip-test.sheet"
