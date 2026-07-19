@@ -205,6 +205,43 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (check (volatile-p s "A3") t)                        ; volatile followed to A3
     (check (volatile-p s "A2") nil))
 
+  ;; parse-ref accepts $ markers (they only annotate copy/paste absoluteness)
+  (check (parse-ref "$A$1") '(0 . 0))
+  (check (parse-ref "$B2") '(1 . 1))
+
+  ;; copy-cell: relative references shift by the source->dest offset
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10) (set-cell s "A2" 100)
+    (set-cell s "B1" '(* (cell "A1") 2))                 ; relative ref
+    (copy-cell s "B1" "B2")                              ; paste one row down
+    (check (get-formula s "B2") '(* (cell "A2") 2))      ; A1 -> A2
+    (check (get-value s "B2") 200))
+
+  ;; absolute ($) references do NOT shift on copy
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10) (set-cell s "A2" 100)
+    (set-cell s "B1" '(* (cell "$A$1") 2))               ; absolute
+    (copy-cell s "B1" "B2")
+    (check (get-formula s "B2") '(* (cell "$A$1") 2))    ; unchanged
+    (check (get-value s "B2") 20))                       ; still A1*2
+
+  ;; mixed reference $A1 (absolute column, relative row)
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1) (set-cell s "A2" 2)
+    (set-cell s "C1" '(cell "$A1"))                      ; abs col A, rel row
+    (copy-cell s "C1" "D2")                              ; offset +1 row, +1 col
+    (check (get-formula s "D2") '(cell "$A2"))           ; col stays A; row 1 -> 2
+    (check (get-value s "D2") 2))
+
+  ;; fill-range: copy a template across a rectangle, each adjusted relatively
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1) (set-cell s "A2" 2) (set-cell s "A3" 3)
+    (set-cell s "B1" '(* (cell "A1") 10))                ; template
+    (fill-range s "B1" "B2" "B3")                        ; fill B2:B3
+    (check (get-value s "B1") 10)
+    (check (get-value s "B2") 20)                        ; A2*10
+    (check (get-value s "B3") 30))
+
   ;; set-cells: install a whole batch, then one sweep. Forward references
   ;; in any order resolve with no transient error; the return value is the
   ;; list of resulting values in input order; a later pair for a cell wins.

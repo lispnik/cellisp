@@ -35,8 +35,9 @@
    ;; serialization
    #:write-sheet #:read-sheet #:save-sheet #:load-sheet
    #:sheet->form #:form->sheet
-   ;; structural editing
+   ;; structural editing + copy/paste
    #:insert-row #:delete-row #:insert-column #:delete-column
+   #:copy-cell #:fill-range
    ;; introspection
    #:dependents #:precedents #:map-cells #:volatile-refs
    ;; conditions

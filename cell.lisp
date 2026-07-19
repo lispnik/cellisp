@@ -45,7 +45,9 @@
                            :format-arguments (list designator)))
      designator)
     ((or string symbol)
-     (let* ((s (string designator))
+     ;; strip $ markers ($A$1, $A1, A$1) — they annotate copy/paste absoluteness
+     ;; and are semantically ignored when resolving a reference to a cell.
+     (let* ((s (remove #\$ (string designator)))
             (i 0) (len (length s)))
        (loop while (and (< i len) (alpha-char-p (char s i))) do (incf i))
        (when (or (zerop i) (= i len))
