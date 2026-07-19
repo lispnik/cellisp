@@ -174,6 +174,30 @@ and out-of-band async deliveries from other threads are serialized.
 (copy-cell s "B1" "B2")              ; B2 becomes (* (cell "A2") 2)
 ```
 
+### Driving a UI
+
+A front end needs two things the engine now hands it directly. A **change hook**
+delivers, after every edit, exactly the cells to repaint — the refs whose value
+or error changed — so nothing has to diff the grid:
+
+```lisp
+(set-change-hook s (lambda (changed) (dolist (r changed) (repaint r))))
+(set-cell s "A1" 100)   ; hook fires with (A1 A3 …): A1 and its dependents
+(set-cell s "A1" 100)   ; hook fires with (): the value didn't change
+```
+
+The set is row-major sorted, includes cells emptied by `clear-cell`, and is
+empty when an edit changes nothing (the propagation short-circuit is visible
+here). It fires for *any* edit path — `set-cell(s)`, `clear-cell`, `recalc`,
+undo/redo, structural edits. **Grid extent** comes from `used-range` (the tight
+bounding box of non-empty cells, as a `(top-left . bottom-right)` cons, or `nil`)
+and `sheet-dimensions` (rows and cols as two values):
+
+```lisp
+(used-range s)        ; => ((1 . 1) . (4 . 3))   i.e. B2:D5
+(sheet-dimensions s)  ; => 5, 4
+```
+
 ### Explaining a value
 
 `explain` prints a cell's precedent tree — how its value (or error) arises.

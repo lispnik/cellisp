@@ -5,7 +5,7 @@
    ;; sheet
    #:make-sheet #:sheet #:sheet-p
    ;; reference parsing
-   #:ref #:parse-ref #:ref-string
+   #:ref #:parse-ref #:ref-string #:ref-row #:ref-col
    ;; cell access
    #:cell-formula #:cell-value #:cell-err
    ;; mutation
@@ -44,6 +44,7 @@
    #:set-name #:remove-name #:name-ref #:set-range #:range-ref
    ;; introspection
    #:dependents #:precedents #:map-cells #:volatile-refs
+   #:used-range #:sheet-dimensions #:set-change-hook
    #:explain #:explain-tree
    ;; conditions
    #:sheet-error #:cyclic-reference #:cell-eval-error #:unbound-cell

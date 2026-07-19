@@ -129,7 +129,8 @@ they still read it)."
                             (remove ref (cell-dependents c) :test 'equal)))))
           (remhash ref (sheet-cells sheet))
           (remhash ref (sheet-volatiles sheet)) ; drop from the volatile registry
-          (recompute-closure sheet deps)))
+          ;; the cleared cell won't recompute itself, so report it explicitly.
+          (recompute-closure sheet deps :extra-changed (list ref))))
       (values))))
 
 (defun get-value (sheet designator)
@@ -205,9 +206,11 @@ in arrival order)."
       (dolist (r refs) (visit r)))
     (nreverse order)))
 
-(defun recompute-closure (sheet seeds)
+(defun recompute-closure (sheet seeds &key extra-changed)
   "Recompute SEEDS and the changed part of their dependent cone. Volatile cells
-are folded into the seeds so they refresh every sweep."
+are folded into the seeds so they refresh every sweep. EXTRA-CHANGED lists refs
+to force into the change set reported to the sheet's change hook even though they
+weren't recomputed here (e.g. a cell CLEAR-CELL just removed)."
   (let* ((*sheet* sheet)
          (*fresh* (make-hash-table :test 'equal))
          (*changed* (make-hash-table :test 'equal))
@@ -237,7 +240,19 @@ are folded into the seeds so they refresh every sweep."
                  (let ((cell (find-cell sheet ref)))
                    (when (and cell (null (cell-err cell)))
                      (cell-swept cell sheet ref)))))
-             *fresh*)))
+             *fresh*)
+    ;; finally, hand the UI (or any listener) the exact repaint set: refs whose
+    ;; value/error changed this sweep, plus any EXTRA-CHANGED (e.g. cleared
+    ;; cells). Gathered only when a hook is installed, so the hot path pays
+    ;; nothing otherwise.
+    (let ((hook (sheet-change-hook sheet)))
+      (when hook
+        (let ((changed '()))
+          (maphash (lambda (ref present) (declare (ignore present))
+                     (push ref changed))
+                   *changed*)
+          (dolist (r extra-changed) (pushnew r changed :test #'equal))
+          (funcall hook (sort changed #'ref-lessp)))))))
 
 (defun recalc (sheet designator)
   "Force recomputation of one cell and its dependents."

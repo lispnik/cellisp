@@ -70,6 +70,10 @@
   ;; (ref . formula-or-:absent) — the state to restore.
   (undo-stack '() :type list)
   (redo-stack '() :type list)
+  ;; Optional callback invoked after each recompute sweep with the sorted list
+  ;; of refs whose value or error changed — the repaint set for a UI. NIL = off.
+  ;; Not serialized (a live closure); reattach after LOAD-SHEET.
+  (change-hook nil)
   ;; Serializes all public access to this sheet (see comment above).
   (lock (bt:make-recursive-lock "cellisp-sheet")))
 
@@ -92,6 +96,45 @@ made visible to every formula via let-bindings established by EVAL-FORMULA."
 (defun map-cells (fn sheet)
   "Call FN with (ref cell) for every non-empty cell."
   (maphash (lambda (ref cell) (funcall fn ref cell)) (sheet-cells sheet)))
+
+(defun ref-lessp (a b)
+  "Row-major total order on refs — sort key for deterministic change sets."
+  (or (< (ref-row a) (ref-row b))
+      (and (= (ref-row a) (ref-row b)) (< (ref-col a) (ref-col b)))))
+
+(defun set-change-hook (sheet fn)
+  "Install FN as SHEET's change hook (or NIL to clear it). After every recompute
+sweep — from any edit: SET-CELL, SET-CELLS, CLEAR-CELL, RECALC(-ALL), UNDO/REDO,
+structural edits — FN is called with the row-major-sorted list of refs whose
+value or error changed. The list is empty when an edit changed nothing (e.g. a
+cell reset to its current value, whose dependents are short-circuited). FN runs
+under the sheet lock; keep it quick, and note UNDO of a mixed edit may fire it
+more than once. Returns FN."
+  (with-sheet-lock (sheet)
+    (setf (sheet-change-hook sheet) fn)))
+
+(defun used-range (sheet)
+  "The tight bounding box of the non-empty cells as a (top-left . bottom-right)
+ref cons, or NIL when the sheet is empty. Read it with (cells (car r) (cdr r))."
+  (with-sheet-lock (sheet)
+    (let (minr minc maxr maxc)
+      (map-cells (lambda (ref cell)
+                   (declare (ignore cell))
+                   (let ((r (ref-row ref)) (c (ref-col ref)))
+                     (when (or (null minr) (< r minr)) (setf minr r))
+                     (when (or (null maxr) (> r maxr)) (setf maxr r))
+                     (when (or (null minc) (< c minc)) (setf minc c))
+                     (when (or (null maxc) (> c maxc)) (setf maxc c))))
+                 sheet)
+      (and minr (cons (cons minr minc) (cons maxr maxc))))))
+
+(defun sheet-dimensions (sheet)
+  "Two values: rows and columns needed to contain every non-empty cell — i.e.
+(1+ max-row) and (1+ max-col) — or 0, 0 for an empty sheet. A UI grid's extent."
+  (let ((r (used-range sheet)))
+    (if r
+        (values (1+ (ref-row (cdr r))) (1+ (ref-col (cdr r))))
+        (values 0 0))))
 
 (defun volatile-refs (sheet)
   "List of refs currently registered volatile on SHEET."

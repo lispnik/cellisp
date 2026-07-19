@@ -430,6 +430,42 @@ the invariant always held."
       (check (range-ref s2 "rng") '((0 . 0) . (2 . 0)))
       (check (get-value s2 "B1") 6)))
 
+  ;; change hook: each sweep reports exactly the refs whose value/error changed
+  (let* ((s (make-sheet)) (last :none)
+         (names (lambda (refs) (mapcar #'ref-string refs))))
+    (set-change-hook s (lambda (refs) (setf last (funcall names refs))))
+    (set-cell s "A1" 10)
+    (set-cell s "A2" 20)
+    (set-cell s "A3" '(+ (cell "A1") (cell "A2")))
+    (check last '("A3"))                                 ; only A3 recomputed here
+    (set-cell s "A1" 100)                                ; A1 and its dependent A3
+    (check last '("A1" "A3"))                            ; sorted row-major, A2 absent
+    (set-cell s "A1" 100)                                ; no-op: value unchanged
+    (check last '())                                     ; short-circuit -> empty set
+    (clear-cell s "A2")                                  ; A2 cleared; A3 now errors
+    (check last '("A2" "A3"))                            ; cleared ref reported too
+    (set-change-hook s nil)                              ; detach
+    (set-cell s "A1" 1)
+    (check last '("A2" "A3")))                           ; unchanged: hook is off
+
+  ;; change hook fires once for a whole set-cells batch
+  (let* ((s (make-sheet)) (fires 0) (seen nil))
+    (set-change-hook s (lambda (refs) (incf fires) (setf seen (mapcar #'ref-string refs))))
+    (set-cells s '(("A1" 1) ("A2" 2) ("B1" (+ (cell "A1") (cell "A2")))))
+    (check fires 1)                                      ; single sweep
+    (check seen '("A1" "B1" "A2")))                      ; row-major: A1,B1(r0),A2(r1)
+
+  ;; used-range and sheet-dimensions
+  (let ((s (make-sheet)))
+    (check (used-range s) nil)                           ; empty sheet
+    (check (multiple-value-list (sheet-dimensions s)) '(0 0))
+    (set-cell s "B2" 1)                                  ; (row 1, col 1)
+    (set-cell s "D5" 2)                                  ; (row 4, col 3)
+    (check (used-range s) '((1 . 1) . (4 . 3)))          ; tight bounding box
+    (check (multiple-value-list (sheet-dimensions s)) '(5 4))
+    (check (ref-row (cdr (used-range s))) 4)             ; ref-row/-col exported
+    (check (ref-col (cdr (used-range s))) 3))
+
   ;; undo/redo of a formula edit, cascading to dependents
   (let ((s (make-sheet)))
     (set-cell s "A1" 1)
