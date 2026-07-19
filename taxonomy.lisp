@@ -92,12 +92,43 @@ can share a generic without colliding. Read the history with CELL-LOG."))
               (not (equal v (first (cell-history cell)))))
       (push v (cell-history cell)))))
 
+;;; --- caching mixin (an :AROUND method on COMPUTE-VALUE) -------------
+
+(defclass cached-mixin ()
+  ((signature :initform :unset :accessor cached-signature))
+  (:documentation "Mixin that memoizes COMPUTE-VALUE: it re-runs the real
+computation only when a precedent's value changed since the last run,
+otherwise it returns the cached value (re-noting the precedents so dependency
+links survive). Hooks COMPUTE-VALUE with an :AROUND method — a third
+composition style — so it wraps whatever value source it is combined with."))
+
+(defmethod compute-value :around ((cell cached-mixin) sheet ref)
+  (declare (ignore ref))
+  (let ((sig (cached-signature cell)))
+    (if (and (listp sig)                ; a real snapshot exists (not :unset)
+             (loop for (p . old) in sig
+                   always (equal old (evaluate-ref sheet p))))
+        ;; inputs unchanged: reuse the cached value, but re-note the
+        ;; precedents so UPDATE-DEPENDENCY-LINKS keeps this cell in the graph
+        (progn
+          (dolist (entry sig) (note-precedent (car entry)))
+          (cell-value cell))
+        ;; changed (or first run): compute for real, then snapshot the freshly
+        ;; observed precedents and their values from *COLLECTED-PRECEDENTS*
+        (let ((v (call-next-method)))
+          (setf (cached-signature cell)
+                (loop for p being the hash-keys of *collected-precedents*
+                      collect (cons p (let ((c (find-cell sheet p)))
+                                        (and c (cell-value c))))))
+          v))))
+
 ;;; --- composing value source + mixins --------------------------------
 
 (defparameter *value-source-classes* '(external-cell async-cell cell)
   "Value-source cell classes, most specific first; a cell has exactly one.")
 
-(defparameter *mixin-classes* '(observable-mixin readonly-mixin logged-mixin)
+(defparameter *mixin-classes*
+  '(observable-mixin readonly-mixin logged-mixin cached-mixin)
   "Known composable behavior mixins. Add a new cross-cutting axis by defining
 a mixin (overriding some generic) and listing it here.")
 
@@ -239,6 +270,17 @@ logged; consecutive duplicate values are collapsed)."
       (if (typep cell 'logged-mixin)
           (reverse (cell-history cell))
           '()))))
+
+(defun set-cached (sheet designator cached)
+  "Enable (or disable) memoization on DESIGNATOR: while enabled it recomputes
+only when a precedent's value changed since its last run. Composes with any
+value source or other mixin."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (if cached
+          (add-mixin cell 'cached-mixin)
+          (remove-mixin cell 'cached-mixin)))
+    cached))
 
 ;;; --- drivers: observation -------------------------------------------
 

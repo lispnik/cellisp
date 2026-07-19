@@ -8,6 +8,7 @@
 (defvar *evals* 0)   ; counts formula-body evaluations, for the dedup test
 (defvar *vcount* 0)  ; volatile-cell recompute counter
 (defvar *pcount* 0)  ; plain-cell recompute counter (contrast)
+(defvar *ccount* 0)  ; cached-cell primary-computation counter
 
 ;; test-only mixins for the COMBINED-CLASS multi-mixin test (top level so
 ;; their types are known when RUN-TESTS is compiled)
@@ -417,6 +418,41 @@
     (set-cell s "B1" 2)                                 ; A1 -> 200 (recompute)
     (check (first log) 200)                              ; observer fired
     (check (cell-log s "A1") '(200)))                    ; logger recorded
+
+  ;; cached-mixin: memoizes via an :AROUND on compute-value — the real
+  ;; computation runs only when a precedent changed. The precedent link
+  ;; survives a cache hit, so a later input change still recomputes.
+  (let ((s (make-sheet)))
+    (setf *ccount* 0)
+    (set-cell s "A1" 5)
+    (set-cell s "A2" '(progn (incf *ccount*) (* 2 (cell "A1"))))
+    (set-cached s "A2" t)
+    (recalc s "A2")                        ; first cached run -> snapshot inputs
+    (let ((n *ccount*))
+      (recalc s "A2")                      ; inputs unchanged -> primary SKIPPED
+      (check *ccount* n)                   ; counter did not advance
+      (check (get-value s "A2") 10))       ; value still correct
+    (set-cell s "A1" 7)                    ; input changed -> recompute
+    (check (get-value s "A2") 14)          ; link survived the cache hits
+    (check (> *ccount* 1) t))              ; primary ran again on the change
+
+  ;; cached composes with observable: the :around (compute-value) and the
+  ;; primary (cell-swept) live on different generics, so both apply — a cache
+  ;; hit skips recompute AND (value unchanged) fires no observer.
+  (let ((s (make-sheet)) (log '()))
+    (setf *ccount* 0)
+    (set-cell s "A1" 1)
+    (set-cell s "A2" '(progn (incf *ccount*) (* 10 (cell "A1"))))
+    (observe s "A2" (lambda (v) (push v log)))
+    (set-cached s "A2" t)
+    (recalc s "A2")                        ; baseline
+    (let ((n *ccount*) (len (length log)))
+      (recalc s "A2")                      ; unchanged -> skip + no notify
+      (check *ccount* n)
+      (check (length log) len))
+    (set-cell s "A1" 3)                    ; changed -> recompute + notify
+    (check (get-value s "A2") 30)
+    (check (first log) 30))
 
   ;; live redefinition: adding a slot migrates existing instances — the CLOS
   ;; capability that motivates CELL being a class rather than a struct.
