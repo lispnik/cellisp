@@ -695,6 +695,26 @@
       (check (getf st :sum) 122)
       (check (getf st :mean) 122/5)))                   ; 24.4
 
+  ;; cached + validated both wrap COMPUTE-VALUE (:around), so they CHAIN:
+  ;; cached is outermost, so a cache hit skips revalidation; an invalid value
+  ;; signals inside cached's call-next-method and is never cached.
+  (let ((s (make-sheet)))
+    (setf *ccount* 0)
+    (set-validator s "A2" #'evenp)
+    (set-cached s "A2" t)
+    (set-cell s "A1" 4)
+    (set-cell s "A2" '(progn (incf *ccount*) (cell "A1")))
+    (check (get-value s "A2") 4) (check *ccount* 1)     ; compute + validate + cache
+    (recalc s "A2")
+    (check (get-value s "A2") 4) (check *ccount* 1)     ; cache hit -> no recompute
+    (set-cell s "A1" 5)                                 ; odd -> validation fails
+    (multiple-value-bind (v e) (get-value s "A2")
+      (check v nil)
+      (check (typep e 'invalid-value) t))
+    (check *ccount* 2)                                  ; missed cache, computed once
+    (set-cell s "A1" 8)                                 ; even again
+    (check (get-value s "A2") 8) (check *ccount* 3))    ; invalid was not cached
+
   ;; three composition modes at once: transformed (:around compute-value) +
   ;; observable (primary cell-swept) + stats (:after cell-swept).
   (let ((s (make-sheet)) (seen '()))
