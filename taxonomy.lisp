@@ -98,48 +98,72 @@ any thread) and recompute its dependents. No-op for a non-async/missing cell."
         (recompute-closure sheet (cell-dependents cell)))))
   (values))
 
-;;; --- observed cells -------------------------------------------------
+;;; --- volatility (orthogonal, registry-only) -------------------------
+
+(defun set-volatile (sheet designator volatile)
+  "Mark (or unmark) DESIGNATOR volatile — recomputed on every sweep, whatever
+its kind. Volatility is an attribute in the sheet registry, not a cell class,
+so it composes with formula/external/async/observed cells alike."
+  (with-sheet-lock (sheet)
+    (set-cell-volatile sheet (parse-ref designator) volatile)
+    volatile))
+
+;;; --- observation (a composable mixin) -------------------------------
+;;;
+;;; OBSERVABLE-MIXIN adds notification to *any* value-source class. OBSERVE
+;;; combines it with the cell's current class on the fly (COMBINED-CLASS) and
+;;; CHANGE-CLASSes into the result, so you can observe a plain, external, or
+;;; async cell. The mixin only overrides CELL-SWEPT, and the value-source
+;;; classes only override COMPUTE-VALUE, so the two axes never collide.
 
 (defvar *unset* (list '#:unset)
   "Unique sentinel: an observed cell has notified no value yet.")
 
-(defclass observed-cell (cell)
+(defclass observable-mixin ()
   ((subscribers :initform '() :accessor cell-subscribers)
    (last-notified :initform *unset* :accessor cell-last-notified))
-  (:documentation "A formula/literal cell that notifies subscribers after a
-sweep whenever its settled value changed. Firing happens once per sweep in
-CELL-SWEPT — never mid-computation — so observers never see a diamond's
-intermediate states."))
+  (:documentation "Mixin adding post-sweep change notification to any cell.
+Combined with a value-source class by OBSERVE. Fires in CELL-SWEPT — once per
+sweep, on settled values — so observers never see diamond intermediates."))
 
-(defmethod cell-swept ((cell observed-cell) sheet ref)
+(defmethod cell-swept ((cell observable-mixin) sheet ref)
   (declare (ignore sheet ref))
   (let ((v (cell-value cell)))
     (unless (equal v (cell-last-notified cell))
       (setf (cell-last-notified cell) v)
       (dolist (fn (cell-subscribers cell)) (funcall fn v)))))
 
+(defun combined-class (mixin base-class-name)
+  "Find, or lazily define and memoize, the class combining MIXIN over the
+class named BASE-CLASS-NAME. The combined class is interned by name, so the
+same (mixin . base) pair always maps to one class."
+  (let* ((name (intern (format nil "~A+~A" mixin base-class-name) :cellisp))
+         (existing (find-class name nil)))
+    (or existing
+        (progn
+          (eval `(defclass ,name (,mixin ,base-class-name) ()))
+          (find-class name)))))
+
 (defun observe (sheet designator callback)
   "Register CALLBACK (a function of the new value) to fire whenever
-DESIGNATOR's value changes after a sweep. Promotes a plain cell to
-OBSERVED-CELL in place; signals SHEET-ERROR for other cell kinds (combining
-kinds would need a mixin)."
+DESIGNATOR's value changes after a sweep. Composes with the cell's existing
+kind: a plain, external, or async cell is promoted in place to a combination
+class carrying OBSERVABLE-MIXIN, preserving value and dependency links."
   (with-sheet-lock (sheet)
     (let* ((ref (parse-ref designator))
            (cell (ensure-cell sheet ref)))
-      (unless (typep cell 'observed-cell)
-        (unless (eq (class-of cell) (find-class 'cell))
-          (error 'sheet-error
-                 :format-control "Cannot observe a ~A"
-                 :format-arguments (list (class-name (class-of cell)))))
-        (change-class cell 'observed-cell))
+      (unless (typep cell 'observable-mixin)
+        (change-class cell (combined-class 'observable-mixin
+                                           (class-name (class-of cell)))))
       (pushnew callback (cell-subscribers cell))
       (values))))
 
 (defun unobserve (sheet designator callback)
-  "Remove a previously registered observer CALLBACK."
+  "Remove a previously registered observer CALLBACK. The cell keeps its
+observable class (now inert if it has no subscribers)."
   (with-sheet-lock (sheet)
     (let ((cell (find-cell sheet (parse-ref designator))))
-      (when (typep cell 'observed-cell)
+      (when (typep cell 'observable-mixin)
         (setf (cell-subscribers cell)
               (remove callback (cell-subscribers cell)))))
     (values)))

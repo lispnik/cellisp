@@ -91,13 +91,10 @@
   (:documentation "A spreadsheet cell: cached value/error plus the dependency
 back-links and the compiled-thunk cache."))
 
-(defclass volatile-cell (cell) ()
-  (:documentation "A cell that must recompute on every recalc regardless of
-whether any precedent changed — the model for spreadsheet volatile functions
-like RAND() or NOW(). It adds no slots; it exists purely so behavior can be
-dispatched on the cell's class instead of a per-cell flag and a branch."))
-
-(defgeneric volatile-p (cell)
-  (:documentation "True if CELL recomputes on every recalc.")
-  (:method ((c cell)) nil)
-  (:method ((c volatile-cell)) t))
+;;; Volatility (recompute every sweep, cf. RAND()/NOW()) is NOT a cell class:
+;;; it is an orthogonal scheduling attribute, tracked in the sheet's VOLATILES
+;;; registry and queried with VOLATILE-P. Keeping it off the class means it
+;;; composes freely with every cell kind (a cell can be external AND volatile
+;;; AND observed). Only the value-source variants (EXTERNAL-CELL, ASYNC-CELL)
+;;; and the OBSERVABLE-MIXIN — the things that actually change dispatch — are
+;;; classes; see taxonomy.lisp.

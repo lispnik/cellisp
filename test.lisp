@@ -132,8 +132,8 @@
     (set-cell s "P1" '(incf *pcount*))               ; plain, identical shape
     (set-cell s "D1" '(cell "V1"))                   ; depends on the volatile
     (check (and (member (parse-ref "V1") (volatile-refs s) :test 'equal) t) t)
-    (check (volatile-p (cellisp::find-cell s (parse-ref "V1"))) t)
-    (check (volatile-p (cellisp::find-cell s (parse-ref "P1"))) nil)
+    (check (volatile-p s "V1") t)
+    (check (volatile-p s "P1") nil)
     (let ((v (get-value s "V1")) (p (get-value s "P1")))
       (set-cell s "A1" 2)                            ; unrelated change
       (check (> (get-value s "V1") v) t)             ; V1 recomputed anyway
@@ -141,7 +141,7 @@
       (check (get-value s "D1") (get-value s "V1"))) ; dependent tracks V1
     ;; demote V1 to a plain cell; it stops recomputing on unrelated sweeps
     (set-cell s "V1" '(incf *vcount*) :volatile nil)
-    (check (volatile-p (cellisp::find-cell s (parse-ref "V1"))) nil)
+    (check (volatile-p s "V1") nil)
     (let ((v (get-value s "V1")))
       (set-cell s "A1" 3)                            ; unrelated change
       (check (get-value s "V1") v)))                 ; now frozen
@@ -256,17 +256,39 @@
     (set-cell s "A1" 3) (check (first log) 30) (check (length log) 2)
     (unobserve s "A2" cb)
     (set-cell s "A1" 4) (check (length log) 2))   ; unobserved -> silent
-  ;; a non-plain cell can't be observed in this prototype
-  (let ((s (make-sheet)))
-    (set-external s "A1" (lambda () 5))
-    (check-signals sheet-error (observe s "A1" (lambda (v) (declare (ignore v))))))
+  ;; OBSERVE composes with any cell kind: observing an EXTERNAL cell promotes
+  ;; it to a combined class carrying OBSERVABLE-MIXIN, keeping its value source.
+  (let ((s (make-sheet)) (feed 5) (log '()))
+    (set-external s "A1" (lambda () feed))
+    (observe s "A1" (lambda (v) (push v log)))
+    (let ((cell (cellisp::find-cell s (parse-ref "A1"))))
+      (check (typep cell 'observable-mixin) t)             ; observation added
+      (check (typep cell 'external-cell) t))               ; source preserved
+    (recalc s "A1") (check (first log) 5)                   ; sweep -> first notify
+    (setf feed 8) (recalc s "A1")
+    (check (get-value s "A1") 8)                            ; still external
+    (check (first log) 8))                                  ; and notifies
+
+  ;; the three axes compose at once: external source + volatile + observed.
+  (let ((s (make-sheet)) (tick 0) (log '()))
+    (set-external s "A1" (lambda () (incf tick)))           ; value source
+    (set-volatile s "A1" t)                                 ; recompute cadence
+    (observe s "A1" (lambda (v) (push v log)))              ; notification
+    (let ((cell (cellisp::find-cell s (parse-ref "A1"))))
+      (check (typep cell 'external-cell) t)
+      (check (typep cell 'observable-mixin) t)
+      (check (volatile-p s "A1") t))
+    (let ((before (length log)))
+      (recalc-all s)                                        ; volatile -> re-pulls
+      (recalc-all s)
+      (check (> (length log) before) t)))                  ; external+volatile+observed
 
   ;; change-class morphs a cell in place, preserving value and links
   (let ((s (make-sheet)))
     (set-cell s "A1" 5)
     (set-cell s "A2" '(* 2 (cell "A1")))
-    (observe s "A2" (lambda (v) (declare (ignore v))))   ; plain -> observed-cell
-    (check (typep (cellisp::find-cell s (parse-ref "A2")) 'observed-cell) t)
+    (observe s "A2" (lambda (v) (declare (ignore v))))   ; plain -> observable
+    (check (typep (cellisp::find-cell s (parse-ref "A2")) 'observable-mixin) t)
     (check (get-value s "A2") 10)                          ; value survived
     (check (and (member (parse-ref "A1") (precedents s "A2") :test 'equal) t) t)
     (set-cell s "A1" 7)

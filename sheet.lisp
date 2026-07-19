@@ -77,14 +77,15 @@ made visible to every formula via let-bindings established by EVAL-FORMULA."
   "List of refs currently registered volatile on SHEET."
   (loop for ref being the hash-keys of (sheet-volatiles sheet) collect ref))
 
-(defun set-cell-volatile (sheet ref cell volatile)
-  "Promote CELL to (or demote from) VOLATILE-CELL in place and keep SHEET's
-volatile registry in sync. Uses CHANGE-CLASS, so the cell keeps its value,
-error, and dependency links across the transition."
-  (cond
-    (volatile
-     (unless (typep cell 'volatile-cell) (change-class cell 'volatile-cell))
-     (setf (gethash ref (sheet-volatiles sheet)) t))
-    (t
-     (when (typep cell 'volatile-cell) (change-class cell 'cell))
-     (remhash ref (sheet-volatiles sheet)))))
+(defun set-cell-volatile (sheet ref volatile)
+  "Add REF to (or remove it from) SHEET's volatile registry. Volatility is a
+scheduling attribute independent of the cell's class, so this touches only the
+registry — any kind of cell can be volatile."
+  (if volatile
+      (setf (gethash ref (sheet-volatiles sheet)) t)
+      (remhash ref (sheet-volatiles sheet))))
+
+(defun volatile-p (sheet designator)
+  "True if DESIGNATOR is registered volatile on SHEET."
+  (with-sheet-lock (sheet)
+    (and (gethash (parse-ref designator) (sheet-volatiles sheet)) t)))

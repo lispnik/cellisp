@@ -14,12 +14,11 @@
    #:recalc #:recalc-all
    ;; cell classes (note: CELL the class shares its symbol with the CELL
    ;; formula reader, already exported below) and their extension points
-   #:volatile-cell #:volatile-p
-   #:external-cell #:async-cell #:observed-cell
-   #:compute-value #:cell-swept
+   #:external-cell #:async-cell #:observable-mixin
+   #:compute-value #:cell-swept #:volatile-p
    ;; cell-kind constructors / drivers
    #:set-external #:set-async #:refresh-async #:deliver-async
-   #:observe #:unobserve
+   #:set-volatile #:observe #:unobserve
    ;; concurrency
    #:with-sheet-lock
    ;; introspection

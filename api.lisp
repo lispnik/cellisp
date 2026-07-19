@@ -18,7 +18,7 @@ is explicitly passed, so re-setting a formula doesn't silently demote it."
            (cell (ensure-cell sheet ref)))
       (setf (cell-formula cell) formula)
       (when volatile-supplied-p
-        (set-cell-volatile sheet ref cell volatile))
+        (set-cell-volatile sheet ref volatile))
       (recompute-closure sheet (list ref))
       (if (cell-err cell)
           (error (cell-err cell))
