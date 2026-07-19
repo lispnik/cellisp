@@ -849,6 +849,32 @@
       (check-signals readonly-cell (set-cell s2 "A3" 0))    ; readonly restored
       (check-signals readonly-cell (set-cell s2 "A2" 99)))) ; append-only restored
 
+  ;; serialization also captures durable history — audit log, formula
+  ;; versions, value log, stats — and the restored mixins are live.
+  (let ((s1 (make-sheet)))
+    (let ((*audit-clock* (constantly 42)))
+      (set-cell s1 "A1" 1)
+      (set-versioned s1 "A1" t)
+      (set-audited s1 "A1" t)
+      (set-logged s1 "A2" t :limit 3)
+      (set-stats s1 "A2" t)
+      (set-cell s1 "A2" '(* 10 (cell "A1")))
+      (with-actor ("alice") (set-cell s1 "A1" 2))
+      (with-actor ("bob")   (set-cell s1 "A1" 3)))
+    (let* ((text (with-output-to-string (o) (write-sheet s1 o)))
+           (s2 (with-input-from-string (i text) (read-sheet i))))
+      (check (cell-versions s2 "A1") '(1 2 3))              ; formula edits
+      (check (cell-log s2 "A2") '(10 20 30))               ; value history
+      (let ((st (cell-stats s2 "A2")))
+        (check (getf st :count) 3) (check (getf st :sum) 60) (check (getf st :max) 30))
+      (let ((audit (cell-audit s2 "A1")))                  ; provenance
+        (check (length audit) 2)
+        (check (getf (first audit) :actor) "alice" #'string=)
+        (check (getf (first audit) :formula) 2)
+        (check (getf (first audit) :time) 42))
+      (set-cell s2 "A1" 4)                                 ; restored mixin is live
+      (check (cell-versions s2 "A1") '(1 2 3 4))))
+
   ;; save-sheet / load-sheet round-trip through an actual file
   (let ((path (merge-pathnames "cellisp-roundtrip-test.sheet"
                                (uiop:temporary-directory)))

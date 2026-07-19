@@ -20,13 +20,31 @@
 (defparameter *serialization-version* 1)
 
 (defun cell->plist (sheet ref cell)
-  "A serializable plist for one cell: :REF, :FORMULA, and any declarative
-attributes it carries."
+  "A serializable plist for one cell: :REF, :FORMULA, its declarative
+attributes, and any *durable history* it carries (audit log, formula versions,
+value log, stats). Transient mixin state (cache signatures, timers, counters)
+and closure-based config are not written."
   (let ((pl (list :ref (ref-string ref) :formula (cell-formula cell))))
+    ;; declarative attributes
     (when (gethash ref (sheet-volatiles sheet)) (setf (getf pl :volatile) t))
     (when (gethash ref (sheet-frozen sheet))    (setf (getf pl :frozen) t))
     (when (typep cell 'readonly-mixin)          (setf (getf pl :readonly) t))
     (when (typep cell 'append-only-mixin)       (setf (getf pl :append-only) t))
+    ;; durable history (stored oldest-first for readability)
+    (when (typep cell 'versioned-mixin)
+      (setf (getf pl :versioned) t)
+      (setf (getf pl :versions) (reverse (formula-versions cell))))
+    (when (typep cell 'audited-mixin)
+      (setf (getf pl :audited) t)
+      (setf (getf pl :audit) (reverse (audit-log cell))))
+    (when (typep cell 'logged-mixin)
+      (setf (getf pl :logged) t)
+      (setf (getf pl :log) (reverse (cell-history cell)))
+      (setf (getf pl :log-limit) (cell-log-limit cell)))
+    (when (typep cell 'stats-mixin)
+      (setf (getf pl :stats)
+            (list :count (stats-count cell) :sum (stats-sum cell)
+                  :min (stats-min cell) :max (stats-max cell))))
     pl))
 
 (defun sheet->form (sheet)
@@ -59,6 +77,28 @@ attributes it carries."
           (when (getf pl :frozen)      (set-frozen sheet ref t))
           (when (getf pl :append-only) (set-append-only sheet ref t))
           (when (getf pl :readonly)    (set-readonly sheet ref t))))
+      ;; restore durable history: add the mixin, then load its slot(s). No
+      ;; recompute happens after this, so the restored state stands as-is.
+      (dolist (pl cells)
+        (let ((cell (find-cell sheet (parse-ref (getf pl :ref)))))
+          (when cell
+            (when (getf pl :versioned)
+              (add-mixin cell 'versioned-mixin)
+              (setf (formula-versions cell) (reverse (getf pl :versions))))
+            (when (getf pl :audited)
+              (add-mixin cell 'audited-mixin)
+              (setf (audit-log cell) (reverse (getf pl :audit))))
+            (when (getf pl :logged)
+              (add-mixin cell 'logged-mixin)
+              (setf (cell-history cell) (reverse (getf pl :log))
+                    (cell-log-limit cell) (getf pl :log-limit)))
+            (let ((st (getf pl :stats)))
+              (when st
+                (add-mixin cell 'stats-mixin)
+                (setf (stats-count cell) (getf st :count)
+                      (stats-sum cell)   (getf st :sum)
+                      (stats-min cell)   (getf st :min)
+                      (stats-max cell)   (getf st :max)))))))
       sheet)))
 
 (defun write-sheet (sheet &optional (stream *standard-output*))
