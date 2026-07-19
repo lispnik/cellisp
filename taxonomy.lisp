@@ -73,24 +73,58 @@ cell still recomputes from its precedents (internal writes are not guarded),
 so a read-only formula cell tracks its inputs but its formula can't be edited.
 Dispatches on a different generic than OBSERVABLE-MIXIN, so the two compose."))
 
-(defmethod cell-writable-p ((cell readonly-mixin)) nil)
+(defmethod cell-writable-p ((cell readonly-mixin) &optional new-formula)
+  (declare (ignore new-formula))
+  nil)                                  ; strongest guard: no CALL-NEXT-METHOD
+
+;;; Writable-policy mixins chain via CALL-NEXT-METHOD, so several AND together
+;;; (and READONLY-MIXIN's nil short-circuits the whole conjunction).
+
+(defclass append-only-mixin () ()
+  (:documentation "Write-once: a set is allowed only while the cell is still
+empty, so its formula can be established but never changed."))
+
+(defmethod cell-writable-p ((cell append-only-mixin) &optional new-formula)
+  (declare (ignore new-formula))
+  (and (null (cell-formula cell)) (call-next-method)))
+
+(defclass typed-input-mixin ()
+  ((input-predicate :initform (constantly t) :accessor input-predicate))
+  (:documentation "Reject a set whose new formula fails INPUT-PREDICATE (a
+clear / source change, with no new formula, is allowed)."))
+
+(defmethod cell-writable-p ((cell typed-input-mixin) &optional new-formula)
+  (and (or (null new-formula) (funcall (input-predicate cell) new-formula))
+       (call-next-method)))
+
+(defclass versioned-mixin ()
+  ((formula-versions :initform '() :accessor formula-versions))
+  (:documentation "Record every formula assigned to the cell (most recent
+first) via the NOTE-SET hook — an edit history. Read with CELL-VERSIONS."))
+
+(defmethod note-set ((cell versioned-mixin) sheet ref new-formula)
+  (declare (ignore sheet ref))
+  (push new-formula (formula-versions cell)))
 
 ;;; --- logging mixin (an :AFTER method on CELL-SWEPT) -----------------
 
 (defclass logged-mixin ()
-  ((history :initform '() :accessor cell-history))
+  ((history :initform '() :accessor cell-history)
+   (log-limit :initform nil :accessor cell-log-limit))
   (:documentation "Mixin recording a cell's value history (most recent first,
-consecutive duplicates collapsed). It hooks CELL-SWEPT with an :AFTER method
-rather than a primary one, so it stacks with OBSERVABLE-MIXIN's primary
-CELL-SWEPT via method combination — both fire — demonstrating that two mixins
-can share a generic without colliding. Read the history with CELL-LOG."))
+consecutive duplicates collapsed; capped at LOG-LIMIT entries when set). Hooks
+CELL-SWEPT with an :AFTER, so it stacks with OBSERVABLE-MIXIN's primary
+CELL-SWEPT via method combination. Read the history with CELL-LOG."))
 
 (defmethod cell-swept :after ((cell logged-mixin) sheet ref)
   (declare (ignore sheet ref))
   (let ((v (cell-value cell)))
     (when (or (null (cell-history cell))
               (not (equal v (first (cell-history cell)))))
-      (push v (cell-history cell)))))
+      (push v (cell-history cell))
+      (let ((lim (cell-log-limit cell)))
+        (when (and lim (> (length (cell-history cell)) lim))
+          (setf (cell-history cell) (subseq (cell-history cell) 0 lim)))))))
 
 ;;; --- caching mixin (an :AROUND method on COMPUTE-VALUE) -------------
 
@@ -161,13 +195,168 @@ and fires across threads under the sheet lock — the most stateful mixin."))
                        (dolist (fn (debounce-subscribers cell))
                          (funcall fn (cell-value cell)))))))))))
 
+;;; --- reactive sink mixins (:AFTER on CELL-SWEPT) -------------------
+
+(defclass throttled-mixin ()
+  ((throttle-interval :initform 0 :accessor throttle-interval)
+   (throttle-clock :initform (lambda () (get-internal-real-time))
+                   :accessor throttle-clock)
+   (throttle-last :initform nil :accessor throttle-last)
+   (throttle-last-seen :initform *unset* :accessor throttle-last-seen)
+   (throttle-subscribers :initform '() :accessor throttle-subscribers))
+  (:documentation "Leading-edge counterpart of DEBOUNCED-MIXIN: fire on a
+change immediately, then suppress further fires for THROTTLE-INTERVAL (per
+THROTTLE-CLOCK)."))
+
+(defmethod cell-swept :after ((cell throttled-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (let ((v (cell-value cell)))
+    (unless (equal v (throttle-last-seen cell))
+      (setf (throttle-last-seen cell) v)
+      (let ((now (funcall (throttle-clock cell))))
+        (when (or (null (throttle-last cell))
+                  (>= (- now (throttle-last cell)) (throttle-interval cell)))
+          (setf (throttle-last cell) now)
+          (dolist (fn (throttle-subscribers cell)) (funcall fn v)))))))
+
+(defclass threshold-mixin ()
+  ((threshold-level :initform 0 :accessor threshold-level)
+   (threshold-side :initform nil :accessor threshold-side)
+   (threshold-subscribers :initform '() :accessor threshold-subscribers))
+  (:documentation "Fire only when the value crosses THRESHOLD-LEVEL, calling
+subscribers with (SIDE VALUE) where SIDE is :ABOVE or :BELOW."))
+
+(defmethod cell-swept :after ((cell threshold-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (let* ((v (cell-value cell))
+         (side (if (and (realp v) (>= v (threshold-level cell))) :above :below)))
+    (unless (eq side (threshold-side cell))
+      (setf (threshold-side cell) side)
+      (dolist (fn (threshold-subscribers cell)) (funcall fn side v)))))
+
+(defclass stats-mixin ()
+  ((stats-count :initform 0 :accessor stats-count)
+   (stats-sum :initform 0 :accessor stats-sum)
+   (stats-min :initform nil :accessor stats-min)
+   (stats-max :initform nil :accessor stats-max))
+  (:documentation "Accumulate running count/sum/min/max over the numeric
+values the cell takes on each recompute. Read with CELL-STATS."))
+
+(defmethod cell-swept :after ((cell stats-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (let ((v (cell-value cell)))
+    (when (realp v)
+      (incf (stats-count cell))
+      (incf (stats-sum cell) v)
+      (setf (stats-min cell) (if (stats-min cell) (min (stats-min cell) v) v)
+            (stats-max cell) (if (stats-max cell) (max (stats-max cell) v) v)))))
+
+(defclass persisted-mixin ()
+  ((persist-sink :initform nil :accessor persist-sink)
+   (persist-last-seen :initform *unset* :accessor persist-last-seen))
+  (:documentation "A side-effecting output sink: call PERSIST-SINK with the
+value whenever it changes (write it to a store, a socket, etc.) — the mirror
+of EXTERNAL-CELL's input role."))
+
+(defmethod cell-swept :after ((cell persisted-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (let ((v (cell-value cell)))
+    (unless (equal v (persist-last-seen cell))
+      (setf (persist-last-seen cell) v)
+      (when (persist-sink cell) (funcall (persist-sink cell) v)))))
+
+;;; --- value-wrapping mixins (:AROUND on COMPUTE-VALUE) ---------------
+;;;
+;;; Each wraps value production. Several may stack (they chain via
+;;; CALL-NEXT-METHOD in class-precedence order); combine deliberately.
+
+(defclass default-mixin ()
+  ((default-value :initform nil :accessor cell-default))
+  (:documentation "Return DEFAULT-VALUE instead of storing the error when the
+computation fails (cycles still propagate)."))
+
+(defmethod compute-value :around ((cell default-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (handler-case (call-next-method)
+    (cyclic-reference (e) (error e))
+    (error () (cell-default cell))))
+
+(defclass transformed-mixin ()
+  ((transform-fn :initform #'identity :accessor cell-transform))
+  (:documentation "Post-process the computed value through TRANSFORM-FN — e.g.
+clamp, round, coerce."))
+
+(defmethod compute-value :around ((cell transformed-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (funcall (cell-transform cell) (call-next-method)))
+
+(defclass validated-mixin ()
+  ((validator-fn :initform (constantly t) :accessor cell-validator))
+  (:documentation "Signal INVALID-VALUE when the computed value fails
+VALIDATOR-FN."))
+
+(defmethod compute-value :around ((cell validated-mixin) sheet ref)
+  (let ((v (call-next-method)))
+    (unless (funcall (cell-validator cell) v)
+      (error 'invalid-value :ref ref :value v))
+    v))
+
+(defclass timed-mixin ()
+  ((timed-total :initform 0 :accessor timed-total)
+   (timed-count :initform 0 :accessor timed-count))
+  (:documentation "Accumulate run time and count across recomputes, for
+profiling. Read with CELL-TIMING."))
+
+(defmethod compute-value :around ((cell timed-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (let ((t0 (get-internal-run-time)))
+    (multiple-value-prog1 (call-next-method)
+      (incf (timed-total cell) (- (get-internal-run-time) t0))
+      (incf (timed-count cell)))))
+
+(defclass retry-mixin ()
+  ((retry-max :initform 2 :accessor retry-max))
+  (:documentation "Re-run the computation up to RETRY-MAX times on error
+before giving up — for transient failures in external/async cells."))
+
+(defmethod compute-value :around ((cell retry-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (loop with n = (retry-max cell)
+        for attempt from 0
+        do (handler-case (return (call-next-method))
+             (cyclic-reference (e) (error e))
+             (error (e) (when (>= attempt n) (error e))))))
+
+(defclass ttl-cached-mixin ()
+  ((ttl :initform 0 :accessor cell-ttl)
+   (ttl-clock :initform (lambda () (get-internal-real-time)) :accessor ttl-clock)
+   (ttl-stamp :initform nil :accessor ttl-stamp)
+   (ttl-precedents :initform '() :accessor ttl-precedents))
+  (:documentation "Time-based memoization: reuse the last value for TTL units
+(per TTL-CLOCK) before recomputing — e.g. rate-limit an external fetch."))
+
+(defmethod compute-value :around ((cell ttl-cached-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (let ((now (funcall (ttl-clock cell))))
+    (if (and (ttl-stamp cell) (< (- now (ttl-stamp cell)) (cell-ttl cell)))
+        (progn (dolist (p (ttl-precedents cell)) (note-precedent p))
+               (cell-value cell))
+        (multiple-value-prog1 (call-next-method)
+          (setf (ttl-stamp cell) now
+                (ttl-precedents cell)
+                (loop for p being the hash-keys of *collected-precedents*
+                      collect p))))))
+
 ;;; --- composing value source + mixins --------------------------------
 
 (defparameter *value-source-classes* '(external-cell async-cell cell)
   "Value-source cell classes, most specific first; a cell has exactly one.")
 
 (defparameter *mixin-classes*
-  '(observable-mixin readonly-mixin logged-mixin cached-mixin debounced-mixin)
+  '(observable-mixin readonly-mixin logged-mixin cached-mixin debounced-mixin
+    default-mixin transformed-mixin validated-mixin timed-mixin retry-mixin
+    ttl-cached-mixin throttled-mixin threshold-mixin stats-mixin persisted-mixin
+    append-only-mixin typed-input-mixin versioned-mixin)
   "Known composable behavior mixins. Add a new cross-cutting axis by defining
 a mixin (overriding some generic) and listing it here.")
 
@@ -291,13 +480,14 @@ escape hatch and is never blocked."
           (remove-mixin cell 'readonly-mixin)))
     readonly))
 
-(defun set-logged (sheet designator logged)
-  "Start (or stop) recording DESIGNATOR's value history. Composes with any
-value source or other mixin; read the history back with CELL-LOG."
+(defun set-logged (sheet designator logged &key limit)
+  "Start (or stop) recording DESIGNATOR's value history, keeping at most LIMIT
+entries (NIL = unbounded). Read the history back with CELL-LOG."
   (with-sheet-lock (sheet)
     (let ((cell (ensure-cell sheet (parse-ref designator))))
       (if logged
-          (add-mixin cell 'logged-mixin)
+          (progn (add-mixin cell 'logged-mixin)
+                 (setf (cell-log-limit cell) limit))
           (remove-mixin cell 'logged-mixin)))
     logged))
 
@@ -320,6 +510,153 @@ value source or other mixin."
           (add-mixin cell 'cached-mixin)
           (remove-mixin cell 'cached-mixin)))
     cached))
+
+(defmacro define-mixin-toggle (name mixin &body setup)
+  "Define a driver (NAME sheet designator ARG) that adds MIXIN (running SETUP,
+which sees CELL and ARG) or, when ARG is NIL, removes it. Returns ARG."
+  `(defun ,name (sheet designator arg)
+     (with-sheet-lock (sheet)
+       (let ((cell (ensure-cell sheet (parse-ref designator))))
+         (cond (arg (add-mixin cell ',mixin) ,@setup)
+               (t (remove-mixin cell ',mixin))))
+       arg)))
+
+(define-mixin-toggle set-default default-mixin
+  (setf (cell-default cell) arg))                 ; arg is the default value
+
+(define-mixin-toggle set-transform transformed-mixin
+  (setf (cell-transform cell) arg))               ; arg is the transform fn
+
+(define-mixin-toggle set-validator validated-mixin
+  (setf (cell-validator cell) arg))               ; arg is the predicate
+
+(define-mixin-toggle set-retry retry-mixin
+  (setf (retry-max cell) arg))                    ; arg is the retry count
+
+(define-mixin-toggle set-typed-input typed-input-mixin
+  (setf (input-predicate cell) arg))              ; arg is the input predicate
+
+(defun set-append-only (sheet designator append-only)
+  "Make DESIGNATOR write-once (its formula can be set while empty but not
+changed thereafter), or lift that restriction."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (if append-only
+          (add-mixin cell 'append-only-mixin)
+          (remove-mixin cell 'append-only-mixin)))
+    append-only))
+
+(defun set-frozen (sheet designator frozen)
+  "Freeze (or unfreeze) DESIGNATOR: a frozen cell is held at its current value
+and skipped during recomputation, whatever changes around it. Volatility-like,
+it is a registry attribute, not a class, so it composes with any cell."
+  (with-sheet-lock (sheet)
+    (let ((ref (parse-ref designator)))
+      (if frozen
+          (setf (gethash ref (sheet-frozen sheet)) t)
+          (remhash ref (sheet-frozen sheet))))
+    frozen))
+
+(defun set-versioned (sheet designator versioned)
+  "Start (or stop) recording DESIGNATOR's formula-edit history; seed it with
+the current formula. Read the history with CELL-VERSIONS."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (cond (versioned
+             (add-mixin cell 'versioned-mixin)
+             (when (and (cell-formula cell) (null (formula-versions cell)))
+               (setf (formula-versions cell) (list (cell-formula cell)))))
+            (t (remove-mixin cell 'versioned-mixin))))
+    versioned))
+
+(defun cell-versions (sheet designator)
+  "The formulas assigned to DESIGNATOR over time, oldest first (empty unless
+versioned)."
+  (with-sheet-lock (sheet)
+    (let ((cell (find-cell sheet (parse-ref designator))))
+      (if (typep cell 'versioned-mixin)
+          (reverse (formula-versions cell))
+          '()))))
+
+(defun set-timed (sheet designator timed)
+  "Enable (or disable) per-recompute timing on DESIGNATOR; read CELL-TIMING."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (if timed (add-mixin cell 'timed-mixin) (remove-mixin cell 'timed-mixin)))
+    timed))
+
+(defun cell-timing (sheet designator)
+  "Return (values total-run-time run-count) for a timed cell, else NIL,NIL."
+  (with-sheet-lock (sheet)
+    (let ((cell (find-cell sheet (parse-ref designator))))
+      (if (typep cell 'timed-mixin)
+          (values (timed-total cell) (timed-count cell))
+          (values nil nil)))))
+
+(defun set-ttl (sheet designator ttl &key (clock nil clock-supplied))
+  "Cache DESIGNATOR's value for TTL time units (0 / NIL disables). CLOCK is a
+thunk returning the current time (default: GET-INTERNAL-REAL-TIME)."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (cond ((and ttl (plusp ttl))
+             (add-mixin cell 'ttl-cached-mixin)
+             (setf (cell-ttl cell) ttl (ttl-stamp cell) nil)
+             (when clock-supplied (setf (ttl-clock cell) clock)))
+            (t (remove-mixin cell 'ttl-cached-mixin))))
+    ttl))
+
+(defun throttle (sheet designator callback
+                 &key (interval 0) (clock nil clock-supplied))
+  "Subscribe CALLBACK but leading-edge throttle it: fire on a change
+immediately, then suppress for INTERVAL (per CLOCK, default real time)."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (add-mixin cell 'throttled-mixin)
+      (setf (throttle-interval cell) interval)
+      (when clock-supplied (setf (throttle-clock cell) clock))
+      (pushnew callback (throttle-subscribers cell))
+      (values))))
+
+(defun on-threshold (sheet designator level callback)
+  "Subscribe CALLBACK to fire only when DESIGNATOR crosses LEVEL, with
+arguments (:above/:below value)."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (add-mixin cell 'threshold-mixin)
+      (setf (threshold-level cell) level)
+      ;; seed the side from the current value so only genuine crossings fire
+      (let ((v (cell-value cell)))
+        (setf (threshold-side cell)
+              (if (and (realp v) (>= v level)) :above :below)))
+      (pushnew callback (threshold-subscribers cell))
+      (values))))
+
+(defun set-stats (sheet designator stats)
+  "Enable (or disable) running count/sum/min/max on DESIGNATOR; read CELL-STATS."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (if stats (add-mixin cell 'stats-mixin) (remove-mixin cell 'stats-mixin)))
+    stats))
+
+(defun cell-stats (sheet designator)
+  "Return a plist (:count :sum :min :max :mean) for a stats cell, else NIL."
+  (with-sheet-lock (sheet)
+    (let ((cell (find-cell sheet (parse-ref designator))))
+      (when (typep cell 'stats-mixin)
+        (list :count (stats-count cell) :sum (stats-sum cell)
+              :min (stats-min cell) :max (stats-max cell)
+              :mean (when (plusp (stats-count cell))
+                      (/ (stats-sum cell) (stats-count cell))))))))
+
+(defun set-persist (sheet designator sink)
+  "Call SINK (a function of the value) whenever DESIGNATOR changes; NIL to
+disable."
+  (with-sheet-lock (sheet)
+    (let ((cell (ensure-cell sheet (parse-ref designator))))
+      (cond (sink (add-mixin cell 'persisted-mixin)
+                  (setf (persist-sink cell) sink))
+            (t (remove-mixin cell 'persisted-mixin))))
+    sink))
 
 (defun debounce (sheet designator callback
                  &key (scheduler #'default-debounce-scheduler))

@@ -495,6 +495,162 @@
     (dolist (th (reverse queue)) (funcall th))
     (check deb '(20)))                      ; debounced fired once, settled value
 
+  ;; default-mixin: computation errors fall back to a default value
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 0)
+    (set-default s "A2" -1)
+    (set-cell s "A2" '(/ 10 (cell "A1")))       ; divide by zero
+    (check (get-value s "A2") -1)               ; default, not an error
+    (set-cell s "A1" 5)
+    (check (get-value s "A2") 2))               ; recovers to the real value
+
+  ;; transformed-mixin: post-process the value (here, clamp to 0..100)
+  (let ((s (make-sheet)))
+    (set-transform s "A2" (lambda (v) (min 100 (max 0 v))))
+    (set-cell s "A1" 150)
+    (set-cell s "A2" '(cell "A1"))
+    (check (get-value s "A2") 100)
+    (set-cell s "A1" -5)
+    (check (get-value s "A2") 0))
+
+  ;; validated-mixin: an out-of-spec value signals INVALID-VALUE
+  (let ((s (make-sheet)))
+    (set-validator s "A1" #'evenp)
+    (set-cell s "A1" 4)
+    (check (get-value s "A1") 4)
+    (check-signals invalid-value (set-cell s "A1" 3)))
+
+  ;; timed-mixin: accumulates run count across recomputes
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (set-timed s "A2" t)
+    (set-cell s "A2" '(cell "A1"))              ; run 1
+    (set-cell s "A1" 2)                         ; run 2
+    (multiple-value-bind (total count) (cell-timing s "A2")
+      (check (integerp total) t)
+      (check count 2)))
+
+  ;; retry-mixin: a transient error is retried until it succeeds
+  (let ((s (make-sheet)) (tries 0))
+    (set-retry s "A1" 3)
+    (set-external s "A1" (lambda () (incf tries) (if (< tries 3) (error "flaky") 42)))
+    (check (get-value s "A1") 42)
+    (check (>= tries 3) t))
+
+  ;; ttl-cached-mixin: reuse the value within a TTL (injected clock)
+  (let ((s (make-sheet)) (clock 0))
+    (setf *ccount* 0)
+    (set-cell s "A1" 5)
+    (set-ttl s "A2" 10 :clock (lambda () clock))
+    (set-cell s "A2" '(progn (incf *ccount*) (* 2 (cell "A1"))))
+    (check *ccount* 1)
+    (setf clock 5) (recalc s "A2") (check *ccount* 1)   ; within TTL -> reuse
+    (setf clock 20) (recalc s "A2") (check *ccount* 2)  ; expired -> recompute
+    (check (get-value s "A2") 10))
+
+  ;; throttled-mixin: leading-edge — fire, then suppress for the interval
+  (let ((s (make-sheet)) (clock 0) (fired '()))
+    (set-cell s "A1" 0)
+    (set-cell s "A2" '(cell "A1"))
+    (throttle s "A2" (lambda (v) (push v fired)) :interval 10 :clock (lambda () clock))
+    (set-cell s "A1" 1)                          ; fire (leading)
+    (setf clock 5) (set-cell s "A1" 2)           ; within interval -> suppressed
+    (setf clock 15) (set-cell s "A1" 3)          ; interval passed -> fire
+    (check fired '(3 1)))
+
+  ;; threshold-mixin: fire only on crossing the level
+  (let ((s (make-sheet)) (events '()))
+    (set-cell s "A1" 0)
+    (set-cell s "A2" '(cell "A1"))
+    (on-threshold s "A2" 10 (lambda (side v) (push (list side v) events)))
+    (set-cell s "A1" 5)                          ; still below -> no fire
+    (set-cell s "A1" 15)                         ; crosses up -> fire
+    (set-cell s "A1" 12)                         ; still above -> no fire
+    (set-cell s "A1" 3)                          ; crosses down -> fire
+    (check events '((:below 3) (:above 15))))
+
+  ;; stats-mixin: running count/sum/min/max/mean over the values taken
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (set-stats s "A2" t)
+    (set-cell s "A2" '(* 10 (cell "A1")))       ; 10
+    (set-cell s "A1" 2)                          ; 20
+    (set-cell s "A1" 3)                          ; 30
+    (let ((st (cell-stats s "A2")))
+      (check (getf st :count) 3)
+      (check (getf st :min) 10)
+      (check (getf st :max) 30)
+      (check (getf st :mean) 20)))
+
+  ;; persisted-mixin: a sink is called with each new value
+  (let ((s (make-sheet)) (store '()))
+    (set-cell s "A1" 1)
+    (set-persist s "A2" (lambda (v) (push v store)))
+    (set-cell s "A2" '(* 10 (cell "A1")))       ; 10 -> sink
+    (set-cell s "A1" 2)                          ; 20 -> sink
+    (set-cell s "A1" 2)                          ; unchanged -> no sink
+    (check store '(20 10)))
+
+  ;; logged with :limit keeps only the most recent N values
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 0)
+    (set-cell s "A2" '(cell "A1"))
+    (set-logged s "A2" t :limit 2)
+    (dolist (n '(1 2 3 4)) (set-cell s "A1" n))
+    (check (cell-log s "A2") '(3 4)))            ; last two, oldest first
+
+  ;; append-only-mixin: the formula can be set once, then not changed
+  (let ((s (make-sheet)))
+    (set-append-only s "A1" t)
+    (set-cell s "A1" 5)                          ; first write OK
+    (check (get-value s "A1") 5)
+    (check-signals readonly-cell (set-cell s "A1" 9)))
+
+  ;; typed-input-mixin: a set whose formula fails the predicate is rejected
+  (let ((s (make-sheet)))
+    (set-typed-input s "A1" #'numberp)
+    (set-cell s "A1" 5)
+    (check (get-value s "A1") 5)
+    (check-signals readonly-cell (set-cell s "A1" "hi")))
+
+  ;; frozen (a registry attribute): held at its value, skipped on recompute
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 5)
+    (set-cell s "A2" '(* 2 (cell "A1")))
+    (check (get-value s "A2") 10)
+    (set-frozen s "A2" t)
+    (set-cell s "A1" 100)                        ; A1 changes...
+    (check (get-value s "A2") 10)               ; ...but frozen A2 is held
+    (check (frozen-p s "A2") t)
+    (set-frozen s "A2" nil)
+    (recalc s "A2")
+    (check (get-value s "A2") 200))              ; unfrozen -> recomputes
+
+  ;; versioned-mixin: records the formula-edit history via NOTE-SET
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (set-versioned s "A1" t)                     ; seed with current formula
+    (set-cell s "A1" 2)
+    (set-cell s "A1" '(+ 1 1))
+    (check (cell-versions s "A1") '(1 2 (+ 1 1))))
+
+  ;; three composition modes at once: transformed (:around compute-value) +
+  ;; observable (primary cell-swept) + stats (:after cell-swept).
+  (let ((s (make-sheet)) (seen '()))
+    (set-cell s "A1" 0)
+    (set-transform s "A2" (lambda (v) (* v v)))  ; square
+    (set-cell s "A2" '(cell "A1"))
+    (observe s "A2" (lambda (v) (push v seen)))
+    (set-stats s "A2" t)
+    (let ((c (cellisp::find-cell s (parse-ref "A2"))))
+      (check (typep c 'transformed-mixin) t)
+      (check (typep c 'observable-mixin) t)
+      (check (typep c 'stats-mixin) t))
+    (set-cell s "A1" 3)                          ; A2 = 9 (squared)
+    (check (get-value s "A2") 9)
+    (check (first seen) 9)
+    (check (getf (cell-stats s "A2") :max) 9))
+
   ;; live redefinition: adding a slot migrates existing instances — the CLOS
   ;; capability that motivates CELL being a class rather than a struct.
   (progn

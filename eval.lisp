@@ -152,10 +152,20 @@ self-evaluate."
     (declare (ignore sheet ref))
     nil))
 
-(defgeneric cell-writable-p (cell)
-  (:documentation "True if the user API may reassign CELL's formula/value.
-Internal recomputation ignores this — it is a guard on the public mutators.")
-  (:method ((cell cell)) t))
+(defgeneric cell-writable-p (cell &optional new-formula)
+  (:documentation "True if the user API may reassign CELL, optionally to
+NEW-FORMULA (nil for a clear or a source change). A guard on the public
+mutators; internal recomputation ignores it.")
+  (:method ((cell cell) &optional new-formula)
+    (declare (ignore new-formula))
+    t))
+
+(defgeneric note-set (cell sheet ref new-formula)
+  (:documentation "Called on the public set path just before CELL's formula is
+replaced with NEW-FORMULA — a hook for edit history / auditing. Inert base.")
+  (:method ((cell cell) sheet ref new-formula)
+    (declare (ignore sheet ref new-formula))
+    nil))
 
 ;;; --- the recalculation core -----------------------------------------
 
@@ -184,6 +194,10 @@ cells read by a formula."
 
 (defun compute-cell (sheet ref cell)
   "(Re)compute CELL, refreshing its value/error and precedent set."
+  ;; A frozen cell is held at its current value: skip recomputation entirely,
+  ;; leaving its cached value and dependency links untouched.
+  (when (gethash ref (sheet-frozen sheet))
+    (return-from compute-cell (cell-value cell)))
   (let ((*eval-stack* (cons ref *eval-stack*))
         (*collected-precedents* (make-hash-table :test 'equal)))
     ;; Commit the freshly observed precedents and back-links even when the

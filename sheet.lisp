@@ -37,6 +37,13 @@
   (:report (lambda (c s)
              (format s "Cell ~A is read-only" (ref-string (readonly-cell-ref c))))))
 
+(define-condition invalid-value (sheet-error)
+  ((ref :initarg :ref :reader invalid-value-ref)
+   (value :initarg :value :reader invalid-value-value))
+  (:report (lambda (c s)
+             (format s "Invalid value ~S for cell ~A"
+                     (invalid-value-value c) (ref-string (invalid-value-ref c))))))
+
 ;;;; ------------------------------------------------------------------
 ;;;; Sheet
 ;;;; ------------------------------------------------------------------
@@ -55,6 +62,8 @@
   ;; Set of refs whose cells are volatile (recompute every sweep). Kept as a
   ;; registry so RECOMPUTE-CLOSURE can seed them without scanning all cells.
   (volatiles (make-hash-table :test 'equal) :type hash-table)
+  ;; Set of refs held frozen (COMPUTE-CELL skips them; see there).
+  (frozen (make-hash-table :test 'equal) :type hash-table)
   ;; Serializes all public access to this sheet (see comment above).
   (lock (bt:make-recursive-lock "cellisp-sheet")))
 
@@ -94,3 +103,8 @@ registry — any kind of cell can be volatile."
   "True if DESIGNATOR is registered volatile on SHEET."
   (with-sheet-lock (sheet)
     (and (gethash (parse-ref designator) (sheet-volatiles sheet)) t)))
+
+(defun frozen-p (sheet designator)
+  "True if DESIGNATOR is frozen (held at its value, not recomputed)."
+  (with-sheet-lock (sheet)
+    (and (gethash (parse-ref designator) (sheet-frozen sheet)) t)))
