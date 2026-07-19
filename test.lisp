@@ -943,6 +943,21 @@
            (check-signals invalid-value (set-cell s2 "A2" -5))) ; validator restored
       (when (probe-file path) (delete-file path))))
 
+  ;; a serialized input is a formula, not a stored value: editing the input in
+  ;; the saved form and reloading recomputes every dependent cell.
+  (let ((s1 (make-sheet :environment '((tax . 1/10)))))
+    (set-cells s1 '(("A1" 1000) ("A2" 300)                ; income, expenses
+                    ("A3" (- (cell "A1") (cell "A2")))    ; net (derived)
+                    ("B1" (* (cell "A3") tax))))          ; tax (derived)
+    (check (get-value s1 "A3") 700) (check (get-value s1 "B1") 70)
+    (let ((form (sheet->form s1)))
+      (dolist (pl (getf (cdr form) :cells))               ; edit income 1000 -> 2500
+        (when (equal (getf pl :ref) "A1") (setf (getf pl :formula) 2500)))
+      (let ((s2 (form->sheet form)))
+        (check (get-value s2 "A1") 2500)
+        (check (get-value s2 "A3") 2200)                  ; net recomputed
+        (check (get-value s2 "B1") 220))))                ; tax recomputed
+
   ;; save-sheet / load-sheet round-trip through an actual file
   (let ((path (merge-pathnames "cellisp-roundtrip-test.sheet"
                                (uiop:temporary-directory)))
