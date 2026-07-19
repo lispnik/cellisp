@@ -86,9 +86,15 @@ and closure-based config are not written."
             ;; copy the alist so a caller editing the form can't mutate the
             ;; sheet's live environment (or a shared quoted constant)
             :environment (copy-alist (sheet-environment sheet))
+            ;; Each entry is (name . "A1") for a single cell, or
+            ;; (name "A1" "B3") for a range — form->sheet dispatches on shape.
             :names (let ((acc '()))
-                     (maphash (lambda (name ref)
-                                (push (cons name (ref-string ref)) acc))
+                     (maphash (lambda (name val)
+                                (push (if (%range-value-p val)
+                                          (list name (ref-string (car val))
+                                                (ref-string (cdr val)))
+                                          (cons name (ref-string val)))
+                                      acc))
                               (sheet-names sheet))
                      acc)
             :cells (nreverse cells)))))
@@ -102,7 +108,11 @@ and closure-based config are not written."
       (cdr form)
     (declare (ignore version))
     (let ((sheet (make-sheet :environment environment)))
-      (dolist (pair names) (set-name sheet (car pair) (cdr pair)))
+      (dolist (pair names)
+        ;; (name . "A1") is a single cell; (name "A1" "B3") is a range.
+        (if (consp (cdr pair))
+            (set-range sheet (car pair) (second pair) (third pair))
+            (set-name sheet (car pair) (cdr pair))))
       ;; 1. create cells and apply value-wrapping / source config FIRST, so
       ;;    they are active when the formulas recompute below.
       (dolist (pl cells)

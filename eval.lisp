@@ -43,15 +43,23 @@ deterministic tests.")
   (when *collected-precedents*
     (setf (gethash ref *collected-precedents*) t)))
 
+(defun %lookup-name (designator)
+  "The value DESIGNATOR is bound to in *SHEET*'s names table (a ref or a range
+cons), or NIL. Skipped entirely when the sheet has no names — keeps the hot path
+fast — and only strings/symbols can name anything."
+  (and *sheet*
+       (plusp (hash-table-count (sheet-names *sheet*)))
+       (typep designator '(or string symbol))
+       (gethash (%name-key designator) (sheet-names *sheet*))))
+
 (defun resolve-ref (designator)
-  "Resolve DESIGNATOR to a ref: a registered name on *SHEET* takes precedence,
-otherwise it is parsed as an A1 reference. The name lookup is skipped entirely
-when the sheet has no names, keeping the hot path fast."
-  (or (and *sheet*
-           (plusp (hash-table-count (sheet-names *sheet*)))
-           (typep designator '(or string symbol))
-           (gethash (%name-key designator) (sheet-names *sheet*)))
-      (parse-ref designator)))
+  "Resolve DESIGNATOR to a single ref: a registered name on *SHEET* takes
+precedence, otherwise it is parsed as an A1 reference. A range name resolves to
+its top-left corner, so (cell RANGE) reads the block's first cell."
+  (let ((named (%lookup-name designator)))
+    (cond ((null named) (parse-ref designator))
+          ((%range-value-p named) (car named)) ; range name -> its top-left ref
+          (t named))))                          ; single-cell name -> its ref
 
 (defun cell (designator)
   "Read another cell's value. Records the dependency and forces the
@@ -61,22 +69,32 @@ DESIGNATOR may be a registered name as well as an A1 ref."
     (note-precedent ref)
     (evaluate-ref *sheet* ref)))
 
-(defun cells (top-left bottom-right)
-  "Return a list of the values in the rectangle spanned by the two
-corner designators, row-major."
-  (let* ((a (resolve-ref top-left))
-         (b (resolve-ref bottom-right))
-         (r0 (min (ref-row a) (ref-row b)))
-         (r1 (max (ref-row a) (ref-row b)))
-         (c0 (min (ref-col a) (ref-col b)))
-         (c1 (max (ref-col a) (ref-col b)))
-         (out '()))
-    (loop for r from r0 to r1 do
-      (loop for c from c0 to c1
-            for ref = (make-ref r c)
-            do (note-precedent ref)
-               (push (evaluate-ref *sheet* ref) out)))
-    (nreverse out)))
+(defun range-corners (top-left bottom-right)
+  "Two values, the top-left and bottom-right refs CELLS should span. With
+BOTTOM-RIGHT supplied, resolve each corner. With only TOP-LEFT, it may be a
+range name (expands to its two stored corners) or a single cell (a 1x1 range)."
+  (if bottom-right
+      (values (resolve-ref top-left) (resolve-ref bottom-right))
+      (let ((named (%lookup-name top-left)))
+        (if (and named (%range-value-p named))
+            (values (car named) (cdr named))
+            (let ((r (resolve-ref top-left))) (values r r))))))
+
+(defun cells (top-left &optional bottom-right)
+  "Return a list of the values in a rectangle, row-major. Two corner designators
+span it explicitly; a single argument may be a range name (or a single cell)."
+  (multiple-value-bind (a b) (range-corners top-left bottom-right)
+    (let* ((r0 (min (ref-row a) (ref-row b)))
+           (r1 (max (ref-row a) (ref-row b)))
+           (c0 (min (ref-col a) (ref-col b)))
+           (c1 (max (ref-col a) (ref-col b)))
+           (out '()))
+      (loop for r from r0 to r1 do
+        (loop for c from c0 to c1
+              for ref = (make-ref r c)
+              do (note-precedent ref)
+                 (push (evaluate-ref *sheet* ref) out)))
+      (nreverse out))))
 
 ;;; --- aggregates -----------------------------------------------------
 

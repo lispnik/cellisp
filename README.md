@@ -84,6 +84,17 @@ References are A1-style strings. `$` marks absoluteness for copy/paste
 (set-cell s "B1" '(* (cell "price") 2))
 ```
 
+A name can also alias a whole **range**, read with the one-argument form of
+`cells` (which also accepts a single cell as a 1×1 range):
+
+```lisp
+(set-range s "q1" "A1" "A3")
+(set-cell s "B1" '(sum (cells "q1")))     ; sums A1:A3
+```
+
+Both kinds of name follow their cells across structural edits and round-trip
+through serialization.
+
 ### Errors and recovery
 
 Reads never raise — `get-value` returns `(values value error-or-nil)`. A cell

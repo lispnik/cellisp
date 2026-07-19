@@ -117,12 +117,33 @@ registry — any kind of cell can be volatile."
 
 (defun %name-key (name) (string-upcase (string name)))
 
+;;; The names table maps an upcased name to either a single cell (a ref, i.e. an
+;;; (integer . integer) cons) or a rectangular range (a (tl-ref . br-ref) cons,
+;;; whose CAR is itself a cons). %RANGE-VALUE-P tells them apart everywhere the
+;;; distinction matters — RESOLVE-REF, CELLS, structural shifting, serialization.
+(defun %range-value-p (val) (consp (car val)))
+
 (defun set-name (sheet name designator)
   "Bind NAME (a string or symbol, case-insensitive) as an alias for the cell at
 DESIGNATOR, so formulas may write (cell NAME). Returns NAME."
   (with-sheet-lock (sheet)
     (setf (gethash (%name-key name) (sheet-names sheet)) (parse-ref designator))
     name))
+
+(defun set-range (sheet name top-left bottom-right)
+  "Bind NAME as an alias for the rectangular range TOP-LEFT..BOTTOM-RIGHT, so a
+formula may write (cells NAME) to read the whole block. Returns NAME."
+  (with-sheet-lock (sheet)
+    (setf (gethash (%name-key name) (sheet-names sheet))
+          (cons (parse-ref top-left) (parse-ref bottom-right)))
+    name))
+
+(defun range-ref (sheet name)
+  "The (top-left . bottom-right) refs NAME spans, or NIL if NAME is unbound or
+names a single cell rather than a range."
+  (with-sheet-lock (sheet)
+    (let ((val (gethash (%name-key name) (sheet-names sheet))))
+      (and val (%range-value-p val) val))))
 
 (defun remove-name (sheet name)
   "Remove the alias NAME."

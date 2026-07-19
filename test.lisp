@@ -387,6 +387,49 @@ the invariant always held."
       (check (name-ref s2 "x") '(0 . 0))
       (check (get-value s2 "A2") 6)))
 
+  ;; named ranges: a name aliases a rectangle read with one-arg (cells NAME)
+  (let ((s (make-sheet)))
+    (dotimes (i 4) (set-cell s (cellisp::make-ref i 0) (* (1+ i) 10)))  ; A1..A4 = 10..40
+    (set-range s "block" "A1" "A4")
+    (check (range-ref s "block") '((0 . 0) . (3 . 0)))
+    (set-cell s "B1" '(sum (cells "block")))
+    (check (get-value s "B1") 100)                       ; 10+20+30+40
+    (set-cell s "A2" 25)                                 ; edit inside the range
+    (check (get-value s "B1") 105)                       ; range recomputes
+    (check (range-ref s "nope") nil)                     ; not a range
+    (set-cell s "B2" '(cells "block"))                   ; one-arg (cells NAME)
+    (check (get-value s "B2") '(10 25 30 40)))           ; row-major values
+
+  ;; (cells NAME) with a single-cell name is a 1x1 range; (cell NAME) of a
+  ;; range name reads its top-left corner
+  (let ((s (make-sheet)))
+    (set-cell s "C1" 3) (set-cell s "C2" 4)
+    (set-name s "one" "C1")
+    (set-range s "col" "C1" "C2")
+    (set-cell s "D1" '(cells "one"))
+    (check (get-value s "D1") '(3))                      ; single-cell name -> 1x1
+    (set-cell s "D2" '(cell "col"))
+    (check (get-value s "D2") 3))                        ; range name -> top-left
+
+  ;; a named range follows both corners across a structural edit
+  (let ((s (make-sheet)))
+    (dotimes (i 3) (set-cell s (cellisp::make-ref i 0) (1+ i)))   ; A1..A3 = 1,2,3
+    (set-range s "r" "A1" "A3")
+    (set-cell s "B1" '(sum (cells "r")))                 ; = 6
+    (insert-row s 0)                                     ; everything shifts down 1
+    (check (range-ref s "r") '((1 . 0) . (3 . 0)))       ; A1:A3 -> A2:A4
+    (check (get-value s "B2") 6))                        ; still sums the block
+
+  ;; a named range round-trips through serialization
+  (let ((s1 (make-sheet)))
+    (dotimes (i 3) (set-cell s1 (cellisp::make-ref i 0) (1+ i)))
+    (set-range s1 "rng" "A1" "A3")
+    (set-cell s1 "B1" '(sum (cells "rng")))
+    (let* ((text (with-output-to-string (o) (write-sheet s1 o)))
+           (s2 (with-input-from-string (i text) (read-sheet i))))
+      (check (range-ref s2 "rng") '((0 . 0) . (2 . 0)))
+      (check (get-value s2 "B1") 6)))
+
   ;; undo/redo of a formula edit, cascading to dependents
   (let ((s (make-sheet)))
     (set-cell s "A1" 1)

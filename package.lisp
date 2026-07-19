@@ -40,8 +40,8 @@
    ;; structural editing + copy/paste
    #:insert-row #:delete-row #:insert-column #:delete-column
    #:copy-cell #:fill-range #:spill
-   ;; named cells
-   #:set-name #:remove-name #:name-ref
+   ;; named cells and ranges
+   #:set-name #:remove-name #:name-ref #:set-range #:range-ref
    ;; introspection
    #:dependents #:precedents #:map-cells #:volatile-refs
    #:explain #:explain-tree

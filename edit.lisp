@@ -76,12 +76,18 @@ deleted refs)."
     new))
 
 (defun shift-name-table (table shift-fn)
-  "A copy of the name -> ref TABLE with each *value* (ref) mapped through
-SHIFT-FN (dropping names whose target was deleted)."
+  "A copy of the names TABLE with every target mapped through SHIFT-FN. A single
+-cell name drops if its cell was deleted; a range name (a (tl . br) cons) drops
+if either corner was deleted, else keeps its shifted corners."
   (let ((new (make-hash-table :test 'equal)))
-    (maphash (lambda (name ref)
-               (let ((nref (funcall shift-fn ref)))
-                 (unless (eq nref :deleted) (setf (gethash name new) nref))))
+    (maphash (lambda (name val)
+               (if (%range-value-p val)
+                   (let ((tl (funcall shift-fn (car val)))
+                         (br (funcall shift-fn (cdr val))))
+                     (unless (or (eq tl :deleted) (eq br :deleted))
+                       (setf (gethash name new) (cons tl br))))
+                   (let ((nref (funcall shift-fn val)))
+                     (unless (eq nref :deleted) (setf (gethash name new) nref)))))
              table)
     new))
 
