@@ -241,6 +241,36 @@ B1 = <error: Cell Z9 is empty>   (* (CELL "A3") TAX)
 `explain-tree` returns the same information as a nested plist for programmatic
 use.
 
+### Display
+
+The value a cell *shows* — a formatted string, or a spreadsheet error token — is
+the job of the optional **`cellisp/display`** system (loaded separately; the
+engine carries no UI concern):
+
+```lisp
+(asdf:load-system "cellisp/display")
+(use-package '#:cellisp/display)
+
+(display-value s "A3")                 ; => "120"        (a value)
+(display-value s "A2")                 ; => "#DIV/0!"    (a stored error)
+```
+
+`display-value` returns the cell's value formatted, `""` for an empty cell, or an
+error token — `#DIV/0!`, `#REF!`, `#CYCLE!`, `#VALUE!`, `#NUM!`, `#NAME?`,
+`#ERR!` — derived from the stored condition. Formatting is controlled by an
+optional, in-memory **format registry** (per cell or per column; cell wins):
+
+```lisp
+(let ((f (make-formats)))
+  (set-column-format f "B" '(:percent 0))    ; whole column B as percentages
+  (set-format f "B1" '(:fixed 2))            ; …but B1 to 2 decimals
+  (display-value s "B1" :formats f))
+```
+
+Specs are `:general`, `:integer`, `(:fixed n)`, `(:percent n)`,
+`(:currency sym n)`, or a function of the value. `format-value` and `error-token`
+are also exported for direct use.
+
 ### Persistence
 
 `save-sheet` / `load-sheet` (and `write-sheet` / `read-sheet` for streams)

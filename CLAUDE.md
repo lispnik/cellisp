@@ -30,6 +30,8 @@ Tests are a hand-rolled harness in `test.lisp` — no external test framework. `
 
 `bench.lisp` is a standalone performance harness (not part of `test-system`): `sbcl --script bench.lisp [scale]` loads the system and prints a timing table, including a direct before/after measurement of the propagation short-circuit (same edits, pruned cone vs. full propagate).
 
+`cellisp/display` is an **optional secondary system** (`display.lisp`, package `#:cellisp/display`, tests in `display-test.lisp` → `(asdf:test-system "cellisp/display")`). It's a pure rendering layer over the public API — `display-value`/`error-token`/`format-value` + an in-memory `make-formats` registry — turning cell values and stored conditions into display strings and spreadsheet error tokens. The core engine does **not** depend on it; keep display concerns out of core. Because the engine has no distinct `#REF!`/`#NAME?` condition classes, `error-token` disambiguates those by inspecting the condition's report text (see the comment there). CI (`.github/run-tests.lisp`) runs both `cellisp` and `cellisp/display` test systems.
+
 ## Architecture
 
 Files load in the `:serial t` order declared in `cellisp.asd`: `package` → `cell` → `sheet` → `workbook` → `eval` → `api` → `taxonomy` → `serialize` → `edit` → `explain`. Everything is in the single `#:cellisp` package (nickname `#:sheet`). The system depends on `bordeaux-threads` (per-sheet locking).

@@ -15,6 +15,7 @@
     (progn
       #+quicklisp (ql:quickload "bordeaux-threads" :silent t)
       (asdf:test-system "cellisp")
+      (asdf:test-system "cellisp/display")
       (uiop:quit 0))
   (error (e)
     (format t "~&CI FAILURE: ~A~%" e)
