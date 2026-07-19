@@ -202,3 +202,44 @@ the whole rectangle in one recompute sweep."
                        bindings)))
       (set-cells sheet (nreverse bindings)))
     (values)))
+
+;;;; ------------------------------------------------------------------
+;;;; Spill — populate a rectangle from an array-valued formula
+;;;; ------------------------------------------------------------------
+
+(defun eval-in-sheet (sheet formula)
+  "Evaluate FORMULA once in SHEET's context (so CELL/CELLS resolve), to learn
+an array formula's shape. Uses a throwaway cell; records no dependencies."
+  (let ((*sheet* sheet))
+    (eval-formula sheet (make-instance 'cell :formula formula))))
+
+(defun spill (sheet anchor formula)
+  "Evaluate FORMULA — a list (a column) or a list of lists (a 2D block) — and
+populate cells starting at ANCHOR, one per element. Each spilled cell indexes
+FORMULA, so the block tracks FORMULA's inputs (wrap an expensive array in a
+shared cached cell to avoid recomputing it per element). The shape is fixed at
+spill time; re-spill if it changes. Returns (rows . cols)."
+  (with-sheet-lock (sheet)
+    (let* ((aref (parse-ref anchor))
+           (arr (eval-in-sheet sheet formula))
+           (row0 (ref-row aref)) (col0 (ref-col aref)))
+      (cond
+        ((not (listp arr))                       ; scalar: a plain single cell
+         (set-cell sheet anchor formula)
+         (cons 1 1))
+        ((and arr (listp (first arr)))           ; 2D: list of rows
+         (let ((bindings '()))
+           (loop for i from 0 below (length arr) do
+             (loop for j from 0 below (length (nth i arr)) do
+               (push (list (make-ref (+ row0 i) (+ col0 j))
+                           `(nth ,j (nth ,i ,formula)))
+                     bindings)))
+           (set-cells sheet (nreverse bindings))
+           (cons (length arr) (length (first arr)))))
+        (t                                        ; 1D: a column
+         (let ((bindings '()))
+           (loop for i from 0 below (length arr) do
+             (push (list (make-ref (+ row0 i) col0) `(nth ,i ,formula))
+                   bindings))
+           (set-cells sheet (nreverse bindings))
+           (cons (length arr) 1)))))))

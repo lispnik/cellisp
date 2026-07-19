@@ -141,6 +141,8 @@ and out-of-band async deliveries from other threads are serialized.
   to a deleted cell becomes `#REF!`.
 - **Copy/paste**: `copy-cell` and `fill-range` shift *relative* references by
   the source→dest offset while *absolute* (`$`) references stay fixed.
+- **Spill**: `spill` fills a rectangle from an array-valued formula
+  (`(spill s "B1" '(mapcar #'1+ (cells "A1" "A3")))`), tracking its inputs.
 
 ```lisp
 (set-cell s "B1" '(* (cell "A1") 2))

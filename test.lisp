@@ -242,6 +242,24 @@ equal a full RECALC-ALL. Returns T iff the invariant always held."
     (check (get-value s "B2") 20)                        ; A2*10
     (check (get-value s "B3") 30))
 
+  ;; spill: an array-valued formula fills a column and tracks its inputs
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1) (set-cell s "A2" 2) (set-cell s "A3" 3)
+    (spill s "B1" '(mapcar (lambda (x) (* x 10)) (cells "A1" "A3")))
+    (check (get-value s "B1") 10)
+    (check (get-value s "B2") 20)
+    (check (get-value s "B3") 30)
+    (set-cell s "A2" 5)                                  ; input change...
+    (check (get-value s "B2") 50))                       ; ...spill follows
+
+  ;; a 2D array formula spills into a rectangle
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 2)
+    (spill s "C1" '(list (list (* (cell "A1") 1) (* (cell "A1") 2))
+                         (list (* (cell "A1") 3) (* (cell "A1") 4))))
+    (check (get-value s "C1") 2) (check (get-value s "D1") 4)
+    (check (get-value s "C2") 6) (check (get-value s "D2") 8))
+
   ;; named cells: a name aliases a ref and resolves in formulas
   (let ((s (make-sheet)))
     (set-cell s "A1" 10)

@@ -39,7 +39,7 @@
    #:sheet->form #:form->sheet
    ;; structural editing + copy/paste
    #:insert-row #:delete-row #:insert-column #:delete-column
-   #:copy-cell #:fill-range
+   #:copy-cell #:fill-range #:spill
    ;; named cells
    #:set-name #:remove-name #:name-ref
    ;; introspection
