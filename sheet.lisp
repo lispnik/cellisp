@@ -69,6 +69,9 @@
   ;; Cell notes/comments: ref -> string. Metadata only — the engine never reads
   ;; them; they follow their cell across structural edits and are serialized.
   (notes (make-hash-table :test 'equal) :type hash-table)
+  ;; Merged cells: a list of (top-left . bottom-right) ref rectangles. Metadata
+  ;; for a UI — the engine never merges values; the top-left is the anchor.
+  (merges '() :type list)
   ;; Undo/redo of formula edits: each entry is a snapshot alist of
   ;; (ref . formula-or-:absent) — the state to restore.
   (undo-stack '() :type list)
@@ -238,3 +241,56 @@ its cell across structural edits, and is serialized. Returns TEXT."
   "Call FN with (ref note) for every noted cell."
   (with-sheet-lock (sheet)
     (maphash fn (sheet-notes sheet))))
+
+;;; --- merged cells ---------------------------------------------------
+
+(defun %normalize-rect (top-left bottom-right)
+  "A (tl . br) rectangle from two designators, corners ordered."
+  (let ((a (parse-ref top-left)) (b (parse-ref bottom-right)))
+    (cons (cons (min (ref-row a) (ref-row b)) (min (ref-col a) (ref-col b)))
+          (cons (max (ref-row a) (ref-row b)) (max (ref-col a) (ref-col b))))))
+
+(defun ref-in-rect-p (ref rect)
+  "True if REF lies within the (tl . br) RECT."
+  (and (<= (ref-row (car rect)) (ref-row ref) (ref-row (cdr rect)))
+       (<= (ref-col (car rect)) (ref-col ref) (ref-col (cdr rect)))))
+
+(defun rects-overlap-p (a b)
+  "True if rectangles A and B (each a (tl . br)) intersect."
+  (and (<= (ref-row (car a)) (ref-row (cdr b)))
+       (>= (ref-row (cdr a)) (ref-row (car b)))
+       (<= (ref-col (car a)) (ref-col (cdr b)))
+       (>= (ref-col (cdr a)) (ref-col (car b)))))
+
+(defun merge-cells (sheet top-left bottom-right)
+  "Merge the rectangle TOP-LEFT..BOTTOM-RIGHT into one visual cell anchored at its
+top-left. Metadata only — values are untouched. Signals SHEET-ERROR if the
+rectangle overlaps an existing merge. Returns the (tl . br) merge."
+  (with-sheet-lock (sheet)
+    (let ((rect (%normalize-rect top-left bottom-right)))
+      (dolist (m (sheet-merges sheet))
+        (when (rects-overlap-p m rect)
+          (error 'sheet-error
+                 :format-control "Merge ~A:~A overlaps an existing merge"
+                 :format-arguments (list (ref-string (car rect))
+                                         (ref-string (cdr rect))))))
+      (push rect (sheet-merges sheet))
+      rect)))
+
+(defun merged-range (sheet designator)
+  "The (tl . br) merge containing the cell at DESIGNATOR, or NIL."
+  (with-sheet-lock (sheet)
+    (let ((ref (parse-ref designator)))
+      (find-if (lambda (m) (ref-in-rect-p ref m)) (sheet-merges sheet)))))
+
+(defun unmerge-cells (sheet designator)
+  "Remove the merge covering the cell at DESIGNATOR, if any."
+  (with-sheet-lock (sheet)
+    (let ((ref (parse-ref designator)))
+      (setf (sheet-merges sheet)
+            (remove-if (lambda (m) (ref-in-rect-p ref m)) (sheet-merges sheet)))))
+  (values))
+
+(defun merges (sheet)
+  "The sheet's merges, each a (top-left . bottom-right) ref rectangle."
+  (with-sheet-lock (sheet) (copy-list (sheet-merges sheet))))

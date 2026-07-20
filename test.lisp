@@ -691,6 +691,36 @@ the invariant always held."
       (check (cell-note s2 "A1") "hello")
       (check (cell-note s2 "C3") "standalone note")))
 
+  ;; --- merged cells -------------------------------------------------
+
+  (let ((s (make-sheet)))
+    (merge-cells s "A1" "B2")
+    (check (merged-range s "A1") '((0 . 0) . (1 . 1)))   ; anchor + span
+    (check (merged-range s "B2") '((0 . 0) . (1 . 1)))   ; any cell in the block
+    (check (merged-range s "C3") nil)                    ; outside
+    (check (length (merges s)) 1)
+    (check-signals sheet-error (merge-cells s "B2" "C3")) ; overlap refused
+    (merge-cells s "D1" "E1")                            ; disjoint is fine
+    (check (length (merges s)) 2)
+    (unmerge-cells s "A2")                               ; unmerge via any member
+    (check (merged-range s "A1") nil)
+    (check (length (merges s)) 1))
+
+  ;; a merge follows cells across a structural edit; an edge delete drops it
+  (let ((s (make-sheet)))
+    (merge-cells s "B2" "C3")
+    (insert-row s 1)                                     ; everything shifts down
+    (check (merged-range s "B3") '((2 . 1) . (3 . 2)))   ; B2:C3 -> B3:C4
+    (delete-row s 3)                                     ; delete the merge's top edge
+    (check (merges s) nil))                              ; merge dropped
+
+  ;; merges round-trip through serialization
+  (let ((s1 (make-sheet)))
+    (merge-cells s1 "A1" "C1")
+    (let* ((text (with-output-to-string (o) (write-sheet s1 o)))
+           (s2 (with-input-from-string (i text) (read-sheet i))))
+      (check (merged-range s2 "B1") '((0 . 0) . (0 . 2)))))
+
   ;; --- atomic transactions ------------------------------------------
 
   ;; a transaction commits its edits in a single recompute sweep

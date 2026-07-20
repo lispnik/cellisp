@@ -75,6 +75,15 @@ deleted refs)."
              table)
     new))
 
+(defun shift-merges (merges shift-fn)
+  "A copy of the MERGES list ((tl . br) rects) with both corners shifted; a merge
+whose top-left or bottom-right lands on a deleted line is dropped."
+  (loop for (a . b) in merges
+        for na = (funcall shift-fn a)
+        for nb = (funcall shift-fn b)
+        unless (or (eq na :deleted) (eq nb :deleted))
+          collect (cons na nb)))
+
 (defun shift-name-table (table shift-fn)
   "A copy of the names TABLE with every target mapped through SHIFT-FN. A single
 -cell name drops if its cell was deleted; a range name (a (tl . br) cons) drops
@@ -115,7 +124,9 @@ values via RECALC-ALL."
             ;; named aliases follow their target cell (dropped if it's deleted)
             (sheet-names sheet)     (shift-name-table (sheet-names sheet) shift-fn)
             ;; notes follow their cell too (dropped if it's deleted)
-            (sheet-notes sheet)     (shift-registry (sheet-notes sheet) shift-fn))
+            (sheet-notes sheet)     (shift-registry (sheet-notes sheet) shift-fn)
+            ;; merges shift both corners; a merge whose edge is deleted is dropped
+            (sheet-merges sheet)    (shift-merges (sheet-merges sheet) shift-fn))
       (recalc-all sheet)))
   (values))
 

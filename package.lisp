@@ -49,6 +49,8 @@
    #:set-name #:remove-name #:name-ref #:set-range #:range-ref
    ;; cell notes / comments
    #:set-note #:cell-note #:remove-note #:map-notes
+   ;; merged cells
+   #:merge-cells #:unmerge-cells #:merged-range #:merges
    ;; introspection
    #:dependents #:precedents #:map-cells #:volatile-refs
    #:used-range #:sheet-dimensions #:set-change-hook
