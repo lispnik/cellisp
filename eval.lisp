@@ -38,6 +38,14 @@ standalone sheet, so single-sheet evaluation allocates nothing extra.")
   "Inside WITH-TRANSACTION this is a hash-table collecting the seed refs of every
 edit, so recomputation is deferred until the transaction commits (one sweep) and
 per-edit undo is replaced by one combined entry. NIL outside a transaction.")
+(defvar *sticky* nil
+  "When bound (a hash-table) for the whole span of ONE edit — across every
+per-sheet sweep of a cross-sheet cascade — COMPUTE-CELL records the global cell
+handles (sheet . ref) whose value/error changed at ANY point. A cascade can sweep
+one sheet several times (once per producer that feeds it); a change made in an
+early sweep (or by an on-demand pull) would be invisible to the per-sweep
+*CHANGED* of a later sweep, so RECOMPUTE-LOCAL also consults *STICKY* to decide
+whether a cell's precedent changed. NIL outside a workbook cascade.")
 (defvar *actor* nil
   "Identity of whoever is making the current mutation, recorded by
 AUDITED-MIXIN. Bind it with WITH-ACTOR.")
@@ -357,10 +365,12 @@ cells read by a formula."
       ;; the recompute loop reuse the result instead of recomputing.
       (when *fresh* (setf (gethash ref *fresh*) t))
       ;; record whether the output changed, for propagation short-circuiting.
-      (when (and *changed*
-                 (not (and (equal old-value (cell-value cell))
-                           (eq old-err-p (and (cell-err cell) t)))))
-        (setf (gethash ref *changed*) t)))
+      (when (not (and (equal old-value (cell-value cell))
+                      (eq old-err-p (and (cell-err cell) t))))
+        (when *changed* (setf (gethash ref *changed*) t))
+        ;; also record it stickily (global handle) so a later sweep of this sheet
+        ;; in the same cross-sheet cascade still sees the change (see *STICKY*).
+        (when *sticky* (setf (gethash (cons sheet ref) *sticky*) t))))
     (cell-value cell)))
 
 (defun update-dependency-links (sheet ref cell new-precedents-table)

@@ -52,14 +52,19 @@ that frequently leave a value unchanged, exercising the short-circuit."
           (4 `(min ,(e) ,(e)))
           (t `(mod (abs ,(e)) 4))))))
 (defun cells-snapshot (s)
-  "An EQUAL-comparable snapshot of every cell: ref -> (value . error-present).
-The error object itself is reduced to a boolean, since RECALC-ALL creates fresh
-condition instances that wouldn't be EQUAL."
+  "An EQUAL-comparable snapshot of every MEANINGFUL cell: ref -> (value .
+error-present). The error object itself is reduced to a boolean, since a fresh
+recompute creates new condition instances that wouldn't be EQUAL. Pure
+dependency-placeholder cells — no formula, no value, no error, created by
+ENSURE-CELL to hold a back-link to a referenced-empty cell — are excluded: they
+are an internal artifact whose exact set legitimately differs between an
+incrementally-edited sheet and a freshly-recomputed one (e.g. after a
+serialization round-trip), so comparing them would give false mismatches."
   (let ((acc '()))
     (map-cells (lambda (ref cell)
-                 (declare (ignore cell))
                  (multiple-value-bind (v e) (get-value s (ref-string ref))
-                   (push (cons ref (cons v (and e t))) acc)))
+                   (when (or (cell-formula cell) v e)
+                     (push (cons ref (cons v (and e t))) acc))))
                s)
     (sort acc #'string< :key (lambda (e) (ref-string (car e))))))
 (defun random-op (s n)
@@ -91,6 +96,71 @@ the invariant always held."
           (unless (equal before (cells-snapshot s))
             (format t "~&property violation (trial ~D, edit ~D)~%" tr e)
             (return-from property-incremental=full nil)))))))
+
+;;; Property 2: a random sheet round-trips through serialization unchanged —
+;;; write-sheet then read-sheet reproduces every cell's value/error (and names,
+;;; notes). Recompute-on-load means the reloaded sheet must settle identically.
+(defun property-serialization-roundtrip (&key (trials 40) (n 12) (edits 20) (seed 7))
+  (setf *prng* seed)
+  (dotimes (tr trials t)
+    (let ((s (make-sheet)))
+      (loop for i from 1 to n do (set-cell s (cref i) (rand-formula i)))
+      (dotimes (e edits) (random-op s n))
+      (set-name s "anchor" (cref 1))                ; metadata that must survive
+      (set-note s (cref 2) "a note")
+      (let* ((before (cells-snapshot s))
+             (text (with-output-to-string (o) (write-sheet s o)))
+             (s2 (with-input-from-string (in text) (read-sheet in))))
+        (unless (and (equal before (cells-snapshot s2))
+                     (equal (name-ref s2 "anchor") (name-ref s "anchor"))
+                     (equal (cell-note s2 (cref 2)) "a note"))
+          (format t "~&serialization roundtrip violation (trial ~D)~%" tr)
+          (return-from property-serialization-roundtrip nil))))))
+
+;;; Property 3: cross-sheet workbooks. A random DAG of K sheets — a cell may read
+;;; earlier cells in its own sheet or ANY cell in a lower-indexed sheet, so the
+;;; whole workbook stays acyclic — is edited repeatedly; after each edit the
+;;; incremental cross-sheet cascade must equal a full RECOMPUTE-WORKBOOK oracle.
+(defun rand-formula-xsheet (sidx i names n)
+  (if (or (= i 1) (zerop (nextr 3)))
+      (nextr 10)
+      (flet ((e () (if (and (plusp sidx) (zerop (nextr 2)))
+                       ;; cross-sheet: a lower-indexed sheet, any of its n cells
+                       `(cell ,(format nil "~A!A~D"
+                                       (nth (nextr sidx) names) (1+ (nextr n))))
+                       ;; same sheet, a strictly earlier cell
+                       `(cell ,(format nil "A~D" (1+ (nextr (1- i))))))))
+        (case (nextr 4)
+          (0 `(+ ,(e) ,(e)))
+          (1 `(* ,(e) ,(e)))
+          (2 `(- ,(e) ,(e)))
+          (t `(mod (abs ,(e)) 5))))))
+
+(defun workbook-snapshot (wb)
+  (loop for s in (workbook-sheets wb)
+        collect (cons (sheet-name s) (cells-snapshot s))))
+
+(defun property-workbook-incremental=full (&key (trials 30) (sheets 3) (n 8)
+                                             (edits 40) (seed 3))
+  (setf *prng* seed)
+  (dotimes (tr trials t)
+    (let* ((wb (make-workbook))
+           (names (loop for k below sheets collect (format nil "S~D" k)))
+           (shts (loop for name in names collect (add-sheet wb name))))
+      ;; build in sheet order, so a cross-ref always points at a populated sheet
+      (loop for sidx from 0 for sh in shts do
+        (loop for i from 1 to n do
+          (set-cell sh (cref i) (rand-formula-xsheet sidx i names n))))
+      (dotimes (e edits)
+        (let* ((sidx (nextr sheets)) (sh (nth sidx shts)) (i (1+ (nextr n))))
+          (handler-case
+              (set-cell sh (cref i) (rand-formula-xsheet sidx i names n))
+            (sheet-error () nil)))
+        (let ((before (workbook-snapshot wb)))
+          (recompute-workbook wb)                    ; full recompute (the oracle)
+          (unless (equal before (workbook-snapshot wb))
+            (format t "~&workbook property violation (trial ~D, edit ~D)~%" tr e)
+            (return-from property-workbook-incremental=full nil)))))))
 
 (defmacro check (form expected &optional (test '#'equal))
   `(progn
@@ -176,6 +246,11 @@ the invariant always held."
   ;; property: incremental recompute always equals a full RECALC-ALL, over many
   ;; random acyclic sheets and edit sequences (guards the short-circuit).
   (check (property-incremental=full) t)
+  ;; property: a random sheet round-trips through serialization unchanged.
+  (check (property-serialization-roundtrip) t)
+  ;; property: cross-sheet workbooks — incremental cascade equals a full
+  ;; RECOMPUTE-WORKBOOK, over many random acyclic multi-sheet edit sequences.
+  (check (property-workbook-incremental=full) t)
 
   ;; concurrent writers stressing the shared cells hash-table's GROWTH: each of
   ;; N threads creates its own PER distinct cells (disjoint rows). Under the

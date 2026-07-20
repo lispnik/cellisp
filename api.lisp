@@ -296,11 +296,16 @@ it), and fires SHEET's change hook with that set, row-major sorted."
          (ordered (topological-order sheet (affected-closure sheet all-seeds)))
          (skipped (make-hash-table :test 'equal)))
     (dolist (s all-seeds) (setf (gethash s seed-set) t))
-    (dolist (ref ordered)
-      (let ((cell (find-cell sheet ref)))
-        (when (and cell (not (gethash ref *fresh*)))
-          (if (or (gethash ref seed-set)
-                  (some (lambda (p) (gethash p *changed*)) (cell-precedents cell)))
+    (flet ((precedent-changed-p (p)
+             ;; changed this sweep, or (in a cross-sheet cascade) stickily at any
+             ;; earlier sweep of this sheet — see *STICKY*.
+             (or (gethash p *changed*)
+                 (and *sticky* (gethash (cons sheet p) *sticky*)))))
+      (dolist (ref ordered)
+        (let ((cell (find-cell sheet ref)))
+          (when (and cell (not (gethash ref *fresh*)))
+            (if (or (gethash ref seed-set)
+                    (some #'precedent-changed-p (cell-precedents cell)))
               ;; a seed, or an input changed: recompute (COMPUTE-CELL records
               ;; into *CHANGED* whether the output actually changed).
               (handler-case (compute-cell sheet ref cell)
@@ -331,17 +336,21 @@ it), and fires SHEET's change hook with that set, row-major sorted."
           (dolist (r extra-changed) (pushnew r changed :test #'equal))
           (setf changed (sort changed #'ref-lessp))
           (when hook (funcall hook changed))
-          changed)))))
+          changed))))))
 
 (defun recompute-closure (sheet seeds &key extra-changed)
   "Recompute SEEDS on SHEET, then — if SHEET is in a workbook — cascade the
 resulting changes to cross-sheet consumers to a fixpoint. The public mutators all
 funnel through here, so every edit path both repaints (via the change hook) and
 propagates across sheets."
-  (let ((changed (recompute-local sheet seeds :extra-changed extra-changed)))
-    (when (sheet-workbook sheet)
-      (cascade-foreign sheet changed))
-    changed))
+  (if (sheet-workbook sheet)
+      ;; a cross-sheet edit may sweep a sheet several times; *STICKY* keeps the
+      ;; change set alive across all of them so nothing falls between sweeps.
+      (let ((*sticky* (or *sticky* (make-hash-table :test 'equal))))
+        (let ((changed (recompute-local sheet seeds :extra-changed extra-changed)))
+          (cascade-foreign sheet changed)
+          changed))
+      (recompute-local sheet seeds :extra-changed extra-changed)))
 
 (defun %foreign-work (sheet changed)
   "For the CHANGED local refs of SHEET, group the foreign consumers to refresh as

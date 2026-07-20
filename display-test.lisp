@@ -21,8 +21,41 @@
            (format t "~&FAIL: ~S~%  got:      ~S~%  expected: ~S~%"
                    ',form ,got ,exp))))))
 
+;;; Property: display-value is TOTAL — it returns a string for every cell of many
+;;; random sheets (full of errors, strings, negatives, blanks) and never signals,
+;;; with or without a format registry. Guards that error-token + format-value
+;;; cover every stored value and condition. Small deterministic LCG.
+(defvar *dprng* 1)
+(defun dnext (n)
+  (setf *dprng* (mod (+ (* *dprng* 1103515245) 12345) 2147483648))
+  (mod (ash *dprng* -8) n))
+(defun drand-formula (i)
+  (flet ((ref (k) (format nil "A~D" k)))
+    (case (dnext 6)
+      (0 (dnext 10))                              ; literal
+      (1 (- (dnext 6) 3))                          ; maybe negative
+      (2 (if (> i 1) `(/ 10 (cell ,(ref (dnext i)))) 0))  ; maybe div-by-0 / bad ref
+      (3 (if (> i 1) `(+ (cell ,(ref (1+ (dnext (1- i))))) 1) 0))
+      (4 (format nil "txt~D" i))                   ; a string value
+      (t (if (> i 1) `(* (cell ,(ref (dnext i))) 2) 1)))))
+(defun property-display-total (&key (trials 40) (n 12) (seed 5))
+  (setf *dprng* seed)
+  (dotimes (tr trials t)
+    (let ((s (make-sheet)) (f (make-formats)))
+      (add-conditional f #'minusp "(neg)")         ; a conditional literal
+      (set-column-format f "A" '(:fixed 2))
+      (loop for i from 1 to n do
+        (ignore-errors (set-cell s (format nil "A~D" i) (drand-formula i))))
+      (loop for i from 1 to (+ n 3) do             ; include a few empty refs
+        (let ((d1 (ignore-errors (display-value s (format nil "A~D" i))))
+              (d2 (ignore-errors (display-value s (format nil "A~D" i) :formats f))))
+          (unless (and (stringp d1) (stringp d2))
+            (format t "~&display not total at A~D: ~S / ~S~%" i d1 d2)
+            (return-from property-display-total nil)))))))
+
 (defun run-tests ()
   (setf *count* 0 *fails* 0)
+  (check (property-display-total) t)
 
   ;; --- error-token on directly constructed conditions (deterministic) ------
   (check (error-token (make-condition 'cyclic-reference
