@@ -93,6 +93,18 @@ evaluated this is an ordinary on-demand pull; otherwise it is a cross-sheet read
       (progn (note-precedent ref) (evaluate-ref *sheet* ref))
       (progn (note-foreign target ref) (read-foreign target ref))))
 
+(defun read-cell-blank (target ref)
+  "Like READ-CELL-VALUE but an EMPTY cell reads as NIL (blank) rather than
+signaling UNBOUND-CELL — so a range read tolerates gaps, spreadsheet-style. An
+*existing* cell that holds an error still propagates it (use SAFE-CELLS to
+tolerate errors too). The dependency on REF is recorded either way, so filling a
+blank later re-fires the reader."
+  (if (eq target *sheet*)
+      (progn (note-precedent ref)
+             (if (find-cell target ref) (evaluate-ref target ref) nil))
+      (progn (note-foreign target ref)
+             (if (find-cell target ref) (read-foreign target ref) nil))))
+
 (defun %lookup-name (designator)
   "The value DESIGNATOR is bound to in *SHEET*'s names table (a ref or a range
 cons), or NIL. Skipped entirely when the sheet has no names — keeps the hot path
@@ -155,13 +167,19 @@ to read and the inclusive row/column bounds. Handles a sheet qualifier
   "Return a list of the values in a rectangle, row-major. Two corner designators
 span it explicitly; a single argument may be a range name (or a single cell).
 Either form may be sheet-qualified (\"Data!A1\" \"Data!A10\") to read across a
-workbook; the rectangle is taken from that one target sheet."
+workbook; the rectangle is taken from that one target sheet.
+
+Empty cells in the rectangle read as NIL (blank), so a range with gaps is fine
+and the numeric aggregates (which ignore non-numbers) sum/average just the values
+present. An existing cell that holds an error still propagates it; use SAFE-CELLS
+to skip errored cells too. (A single-cell read via CELL stays strict — reading an
+empty cell there signals, preserving error propagation.)"
   (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
     (let ((out '()))
       (loop for r from r0 to r1 do
         (loop for c from c0 to c1
               for ref = (make-ref r c)
-              do (push (read-cell-value target ref) out)))
+              do (push (read-cell-blank target ref) out)))
       (nreverse out))))
 
 ;;; --- aggregates -----------------------------------------------------

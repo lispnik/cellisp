@@ -609,6 +609,33 @@ the invariant always held."
     (set-cell s "B3" '(blankp (cell "A1")))
     (check (get-value s "B3") nil))                       ; A1 = 5 is not blank
 
+  ;; a range read tolerates empty cells by default (blank -> NIL)
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10) (set-cell s "A5" 40)             ; A2..A4 empty
+    (set-cell s "B1" '(cells "A1" "A5"))
+    (check (get-value s "B1") '(10 nil nil nil 40))       ; gaps read as NIL
+    (set-cell s "B2" '(sum (cells "A1" "A5")))
+    (check (get-value s "B2") 50)                         ; aggregate ignores blanks
+    (set-cell s "B3" '(average (cells "A1" "A5")))
+    (check (get-value s "B3") 25)                         ; mean of the two present
+    ;; grid keeps shape with NIL holes
+    (set-cell s "C1" 1) (set-cell s "D2" 4)              ; C1..D2 partly filled
+    (set-cell s "B4" '(grid "C1" "D2"))
+    (check (get-value s "B4") '((1 nil) (nil 4)))
+    ;; filling a gap re-fires (the dependency was recorded)
+    (set-cell s "A3" 100)
+    (check (get-value s "B2") 150))
+
+  ;; but a single-cell read stays strict, and an errored cell in a range still
+  ;; propagates (only safe-cells swallows errors)
+  (let ((s (make-sheet)))
+    (ignore-errors (set-cell s "B1" '(+ (cell "Z9") 1)))  ; single empty read -> error
+    (check (and (nth-value 1 (get-value s "B1")) t) t)
+    (set-cell s "A1" 10)
+    (ignore-errors (set-cell s "A2" '(/ 1 (cell "Z8"))))  ; A2 holds an error
+    (ignore-errors (set-cell s "B2" '(sum (cells "A1" "A2"))))
+    (check (and (nth-value 1 (get-value s "B2")) t) t))   ; range propagates A2's error
+
   ;; safe-cells tolerates empty AND errored cells in a range
   (let ((s (make-sheet)))
     (set-cell s "A1" 10) (set-cell s "A5" 40)             ; A2..A4 empty

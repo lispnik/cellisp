@@ -72,9 +72,14 @@ directly on explicit arguments. On top of that, a small **standard library** add
 the spreadsheet conveniences CL lacks — aggregates that ignore blanks/text over a
 range, predicate-filtered aggregates, 2D range access, lookups, and `iferror`:
 
+A **range** read tolerates gaps: `cells`/`grid` read an empty cell as `nil`
+(blank), so `(sum (cells "A1" "A99"))` sums whatever is there. (A *single*
+`(cell "Z9")` read stays strict — an empty cell there signals, so errors still
+propagate.) `safe-cells` goes further and skips *errored* cells too.
+
 ```lisp
 (minimum (cells "A1" "A9"))              ; MIN ignoring text/blanks (also maximum, product, median)
-(sum (safe-cells "A1" "A99"))            ; tolerant read: skips empty/errored cells in the range
+(sum (safe-cells "A1" "A99"))            ; also skips errored cells, not just blanks
 (sumif (lambda (x) (> x 100)) (cells "A1" "A9"))   ; also countif, averageif
 (grid "A1" "B9")                         ; a range as a list of rows (2D), vs. cells' flat list
 (vlookup "acme" (grid "A1" "C9") 3)      ; also lookup, hlookup, match

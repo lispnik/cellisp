@@ -112,11 +112,12 @@ strings; pass PREDICATE/KEY to customize. Non-destructive."
 (defun grid (top-left &optional bottom-right)
   "Like CELLS, but preserves the rectangle's 2D shape: a list of row lists (each
 inner list a row, left to right). Accepts the same designators as CELLS,
-including a sheet qualifier and range names, and records the same dependencies."
+including a sheet qualifier and range names, and records the same dependencies.
+Empty cells read as NIL (blank), keeping the rectangle's shape."
   (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
     (loop for r from r0 to r1
           collect (loop for c from c0 to c1
-                        collect (read-cell-value target (make-ref r c))))))
+                        collect (read-cell-blank target (make-ref r c))))))
 
 ;;; --- lookups --------------------------------------------------------
 
