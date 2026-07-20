@@ -74,9 +74,13 @@ range, predicate-filtered aggregates, 2D range access, lookups, and `iferror`:
 
 ```lisp
 (minimum (cells "A1" "A9"))              ; MIN ignoring text/blanks (also maximum, product, median)
+(sum (safe-cells "A1" "A99"))            ; tolerant read: skips empty/errored cells in the range
 (sumif (lambda (x) (> x 100)) (cells "A1" "A9"))   ; also countif, averageif
 (grid "A1" "B9")                         ; a range as a list of rows (2D), vs. cells' flat list
 (vlookup "acme" (grid "A1" "C9") 3)      ; also lookup, hlookup, match
+(sortv (cells "A1" "A9"))                ; also filterv, uniquev (compose with spill)
+(concat (cell "A1") " " (cell "B1"))     ; text: left, right, mid, upper, lower, trim, substitute-text
+(year (date 2026 7 20))                  ; dates as universal-time: date, year, month, day, weekday, now
 (iferror (/ (cell "A1") (cell "A2")) 0)  ; a value on error; precedents still tracked
 ```
 
@@ -201,6 +205,9 @@ and out-of-band async deliveries from other threads are serialized.
 ### Editing
 
 - **Undo/redo** of formula edits: `(undo s)` / `(redo s)`.
+- **Transactions**: `(with-transaction (s) …)` applies a group of edits in one
+  recompute sweep and as a single undo step, rolling the sheet fully back if the
+  body signals.
 - **Structural editing**: `insert-row` / `delete-row` / `insert-column` /
   `delete-column` move cells and rewrite references to follow them; a reference
   to a deleted cell becomes `#REF!`.
@@ -281,8 +288,25 @@ optional, in-memory **format registry** (per cell or per column; cell wins):
 ```
 
 Specs are `:general`, `:integer`, `(:fixed n)`, `(:percent n)`,
-`(:currency sym n)`, or a function of the value. `format-value` and `error-token`
-are also exported for direct use.
+`(:currency sym n)`, a literal string, or a function of the value. `format-value`
+and `error-token` are also exported for direct use.
+
+**Conditional formatting** layers value-dependent rules on top: a predicate over
+the cell's value picks a spec that overrides the static format (first match wins,
+optionally scoped to a column):
+
+```lisp
+(add-conditional f #'minusp (lambda (v) (format nil "(~A)" (abs v))))  ; parenthesize negatives
+(add-conditional f #'zerop "—" :column "B")                            ; blank zeros in column B
+```
+
+### Cell metadata
+
+Sheets also carry UI metadata that follows cells across structural edits and
+round-trips through serialization: **notes/comments** (`set-note` / `cell-note` /
+`remove-note`) and **merged cells** (`merge-cells` / `unmerge-cells` /
+`merged-range` / `merges`, anchored at the top-left, overlaps refused). The engine
+never reads either — they're for the front end.
 
 ### Persistence
 
