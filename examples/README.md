@@ -75,3 +75,23 @@ Both csv-spill scripts share **`csv-util.lisp`** (the RFC-4180 `parse-csv`, whic
 coerces fields with core `to-number`) and use the core `respill` (self-clearing
 dynamic spill) and `print-sheet :max-col-width` — the pieces this exploration
 promoted into the library.
+
+### `cache-layers.lisp` → `cache-layers.sheet`
+
+Stacks every caching/reliability mixin on **one** synchronous "fetch" cell —
+`external` (source) + `retry` (survive transient failures) + `ttl` (time-window
+cache) + `timed` (profile) + `logged` (history) — with a virtual clock, injected
+failures, and a real-call counter, so each layer's effect is visible (retry
+survives 2 failures; three recalcs inside the TTL window do 0 fetches; past the
+window it re-fetches). Then it shows the two other caching tools — `set-cached`
+(input-based) and `set-frozen` (pin) — and persists the layered cell to
+`cache-layers.sheet`, reloading it to show what round-trips: the external source
+(a **named** function), the `retry`/`ttl` config, and the logged history (but not
+the transient timer or the live clock closure).
+
+```bash
+sbcl --script examples/cache-layers.lisp
+```
+
+They compose because `cached`/`ttl-cached`/`retry`/`timed` each hook
+`compute-value` with an `:around` method, and `combined-class` stacks them.
