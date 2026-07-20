@@ -167,6 +167,26 @@ are still recorded as precedents, so recovery re-triggers when they change."
   "X coerced to a string: strings verbatim, NIL to \"\", anything else printed."
   (cond ((null x) "") ((stringp x) x) (t (princ-to-string x))))
 
+(defun to-number (x &optional default)
+  "Coerce X to a number: a number is returned as-is; a string that parses
+*entirely* as a number (integer, ratio, float, or exponent) becomes that number;
+anything else — non-numeric text, NIL, a partial match like \"3 apples\" — returns
+DEFAULT (NIL). Reads with *READ-EVAL* off and only accepts a number, so it never
+evaluates or interns a symbol. Handy for cleaning imported/text data, e.g.
+(to-number (cell \"A1\") 0)."
+  (cond
+    ((numberp x) x)
+    ((stringp x)
+     (let ((s (string-trim '(#\Space #\Tab #\Return #\Newline) x)))
+       (if (and (plusp (length s))
+                (let ((c (char s 0)))       ; only bother for number-shaped text
+                  (or (digit-char-p c) (member c '(#\- #\+ #\.)))))
+           (multiple-value-bind (v pos)
+               (let ((*read-eval* nil)) (ignore-errors (read-from-string s nil nil)))
+             (if (and (numberp v) (eql pos (length s))) v default))
+           default)))
+    (t default)))
+
 (defun concat (&rest args)
   "Concatenate ARGS as text (spreadsheet CONCATENATE / &), flattening ranges and
 dropping blanks."

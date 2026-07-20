@@ -70,3 +70,8 @@ re-spills — e.g. 51 vs 52 rows × 11 cols.
 ```bash
 sbcl --script examples/csv-spill-live.lisp     # needs internet + dexador
 ```
+
+Both csv-spill scripts share **`csv-util.lisp`** (the RFC-4180 `parse-csv`, which
+coerces fields with core `to-number`) and use the core `respill` (self-clearing
+dynamic spill) and `print-sheet :max-col-width` — the pieces this exploration
+promoted into the library.

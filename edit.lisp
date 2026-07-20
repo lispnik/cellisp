@@ -126,7 +126,9 @@ values via RECALC-ALL."
             ;; notes follow their cell too (dropped if it's deleted)
             (sheet-notes sheet)     (shift-registry (sheet-notes sheet) shift-fn)
             ;; merges shift both corners; a merge whose edge is deleted is dropped
-            (sheet-merges sheet)    (shift-merges (sheet-merges sheet) shift-fn))
+            (sheet-merges sheet)    (shift-merges (sheet-merges sheet) shift-fn)
+            ;; spill anchors follow their cell (dropped if the anchor is deleted)
+            (sheet-spills sheet)    (shift-registry (sheet-spills sheet) shift-fn))
       (recalc-all sheet)))
   (values))
 
@@ -237,28 +239,47 @@ an array formula's shape. Uses a throwaway cell; records no dependencies."
 populate cells starting at ANCHOR, one per element. Each spilled cell indexes
 FORMULA, so the block tracks FORMULA's inputs (wrap an expensive array in a
 shared cached cell to avoid recomputing it per element). The shape is fixed at
-spill time; re-spill if it changes. Returns (rows . cols)."
+spill time; use RESPILL to re-fill when it changes and clear a shrunk block.
+Returns (rows . cols), and records the extent at ANCHOR for RESPILL."
   (with-sheet-lock (sheet)
     (let* ((aref (parse-ref anchor))
            (arr (eval-in-sheet sheet formula))
-           (row0 (ref-row aref)) (col0 (ref-col aref)))
-      (cond
-        ((not (listp arr))                       ; scalar: a plain single cell
-         (set-cell sheet anchor formula)
-         (cons 1 1))
-        ((and arr (listp (first arr)))           ; 2D: list of rows
-         (let ((bindings '()))
-           (loop for i from 0 below (length arr) do
-             (loop for j from 0 below (length (nth i arr)) do
-               (push (list (make-ref (+ row0 i) (+ col0 j))
-                           `(nth ,j (nth ,i ,formula)))
-                     bindings)))
-           (set-cells sheet (nreverse bindings))
-           (cons (length arr) (length (first arr)))))
-        (t                                        ; 1D: a column
-         (let ((bindings '()))
-           (loop for i from 0 below (length arr) do
-             (push (list (make-ref (+ row0 i) col0) `(nth ,i ,formula))
-                   bindings))
-           (set-cells sheet (nreverse bindings))
-           (cons (length arr) 1)))))))
+           (row0 (ref-row aref)) (col0 (ref-col aref))
+           (extent
+             (cond
+               ((not (listp arr))                ; scalar: a plain single cell
+                (set-cell sheet anchor formula)
+                (cons 1 1))
+               ((and arr (listp (first arr)))    ; 2D: list of rows
+                (let ((bindings '()))
+                  (loop for i from 0 below (length arr) do
+                    (loop for j from 0 below (length (nth i arr)) do
+                      (push (list (make-ref (+ row0 i) (+ col0 j))
+                                  `(nth ,j (nth ,i ,formula)))
+                            bindings)))
+                  (set-cells sheet (nreverse bindings))
+                  (cons (length arr) (length (first arr)))))
+               (t                                 ; 1D: a column
+                (let ((bindings '()))
+                  (loop for i from 0 below (length arr) do
+                    (push (list (make-ref (+ row0 i) col0) `(nth ,i ,formula))
+                          bindings))
+                  (set-cells sheet (nreverse bindings))
+                  (cons (length arr) 1))))))
+      (setf (gethash aref (sheet-spills sheet)) extent)
+      extent)))
+
+(defun respill (sheet anchor formula)
+  "Like SPILL, but first clear the rectangle the previous SPILL/RESPILL wrote at
+ANCHOR — so a result with fewer rows or columns leaves no leftover cells. Use it
+whenever a spill's size can change (a refreshed data feed, a filtered range).
+Returns the new (rows . cols)."
+  (with-sheet-lock (sheet)
+    (let* ((aref (parse-ref anchor))
+           (old (gethash aref (sheet-spills sheet))))
+      (when old
+        (loop for i from 0 below (car old) do
+          (loop for j from 0 below (cdr old)
+                for r = (make-ref (+ (ref-row aref) i) (+ (ref-col aref) j))
+                when (find-cell sheet r) do (clear-cell sheet r))))
+      (spill sheet anchor formula))))

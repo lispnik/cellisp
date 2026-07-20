@@ -106,6 +106,14 @@ and closure-based config are not written."
             ;; merges: ("A1" . "B3") corner strings
             :merges (loop for (a . b) in (sheet-merges sheet)
                           collect (cons (ref-string a) (ref-string b)))
+            ;; spill extents: ("A1" rows cols) so RESPILL works after a reload
+            :spills (let ((acc '()))
+                      (maphash (lambda (ref extent)
+                                 (push (list (ref-string ref)
+                                             (car extent) (cdr extent))
+                                       acc))
+                               (sheet-spills sheet))
+                      acc)
             :cells (nreverse cells)))))
 
 (defun form->sheet (form)
@@ -113,7 +121,7 @@ and closure-based config are not written."
   (unless (and (consp form) (eq (car form) :cellisp-sheet))
     (error 'sheet-error :format-control "Not a cellisp sheet form: ~S"
                         :format-arguments (list form)))
-  (destructuring-bind (&key version environment names notes merges cells
+  (destructuring-bind (&key version environment names notes merges spills cells
                        &allow-other-keys)
       (cdr form)
     (declare (ignore version))
@@ -125,6 +133,9 @@ and closure-based config are not written."
             (set-name sheet (car pair) (cdr pair))))
       (dolist (pair notes) (set-note sheet (car pair) (cdr pair)))
       (dolist (pair merges) (merge-cells sheet (car pair) (cdr pair)))
+      (dolist (sp spills)     ; (anchor-string rows cols)
+        (setf (gethash (parse-ref (first sp)) (sheet-spills sheet))
+              (cons (second sp) (third sp))))
       ;; 1. create cells and apply value-wrapping / source config FIRST, so
       ;;    they are active when the formulas recompute below.
       (dolist (pl cells)

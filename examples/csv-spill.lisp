@@ -28,6 +28,8 @@
 
 (in-package #:cellisp)
 (use-package '#:cellisp/display)
+(load (merge-pathnames "csv-util.lisp"       ; shared RFC-4180 PARSE-CSV
+                       (or *load-truename* *default-pathname-defaults*)))
 
 (defparameter *port* 8765)
 
@@ -105,39 +107,14 @@ Flange,75,32")))
              (format nil "~{~A~^~%~}" (if blank (nthcdr (1+ blank) lines) lines))))
       (usocket:socket-close socket))))
 
-(defun parse-field (s)
-  "Coerce a CSV field to a number when the whole field is numeric, else a string."
-  (let ((s (string-trim '(#\Space #\Tab #\Return) s)))
-    (if (and (plusp (length s))
-             (let ((c (char s 0)))
-               (or (digit-char-p c) (member c '(#\- #\+ #\.)))))
-        (multiple-value-bind (v pos)
-            (let ((*read-eval* nil)) (ignore-errors (read-from-string s nil nil)))
-          (if (and (numberp v) (eql pos (length s))) v s))
-        s)))
-
-(defun parse-csv (text)
-  "TEXT to a list of rows, each a list of coerced fields. Blank lines dropped."
-  (loop for line in (split-on #\Newline text)
-        when (plusp (length (string-trim '(#\Space #\Tab #\Return) line)))
-          collect (mapcar #'parse-field (split-on #\, line))))
-
 ;;;; --- the async fetch + dynamic spill -------------------------------------
 
-(defparameter *extent* (cons 0 0))     ; last (rows . cols) spilled onto Data
 (defvar *generation* 0)                ; bumped after each spill completes
-
-(defun clear-spill (data anchor extent)
-  "Empty the previously-spilled rectangle so a shrunk result leaves no leftovers."
-  (with-sheet-lock (data)
-    (let ((a (parse-ref anchor)))
-      (dotimes (i (car extent))
-        (dotimes (j (cdr extent))
-          (clear-cell data (make-ref (+ (ref-row a) i) (+ (ref-col a) j))))))))
 
 (defun make-csv-fetcher (workbook)
   "A fetcher for SET-ASYNC: on a worker thread, GET the CSV named by _raw!B1,
-parse it, then clear the old block, deliver the rows, and re-spill Data."
+parse it, deliver the rows, and RESPILL Data — which sizes to the response and
+clears any leftovers from a larger previous spill."
   (let ((raw  (find-sheet workbook "_raw"))
         (data (find-sheet workbook "Data")))
     (lambda (deliver)
@@ -146,9 +123,8 @@ parse it, then clear the old block, deliver the rows, and re-spill Data."
          (let ((rows (handler-case
                          (parse-csv (http-get "127.0.0.1" *port* (get-value raw "B1")))
                        (error (e) (list (list "ERROR" (princ-to-string e)))))))
-           (clear-spill data "A1" *extent*)              ; clear the previous block
            (funcall deliver rows)                        ; _raw!A1 := rows (async)
-           (setf *extent* (spill data "A1" '(cell "_raw!A1")))  ; dynamic re-spill
+           (respill data "A1" '(cell "_raw!A1"))         ; self-clearing dynamic spill
            (incf *generation*)))
        :name "csv-fetch"))))
 
@@ -177,7 +153,8 @@ parse it, then clear the old block, deliver the rows, and re-spill Data."
                   (set-cell (find-sheet wb "_raw") "B1" path)
                   (refresh-and-wait wb)
                   (format t "~2&===== GET ~A  ->  ~D rows spilled ~A =====~%"
-                          path (car *extent*) note)
+                          path (nth-value 0 (sheet-dimensions (find-sheet wb "Data")))
+                          note)
                   (print-sheet (find-sheet wb "Data") :name nil)))
            (show "/q1" "")
            (show "/q2" "(grew)")

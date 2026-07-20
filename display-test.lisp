@@ -266,6 +266,17 @@
       (check (contains out "(CELL \"A1\")") t)            ; its refs, quoted
       (check (contains out "10") t))                      ; a constant shown as-is
 
+    ;; :max-col-width truncates wide cells with an ellipsis
+    (let* ((s (make-sheet))
+           (wide (with-output-to-string (o)
+                   (set-cell s "A1" "a-very-long-value-here")
+                   (print-sheet s :stream o :name nil)))
+           (clipped (with-output-to-string (o)
+                      (print-sheet s :stream o :name nil :max-col-width 8))))
+      (check (contains wide "a-very-long-value-here") t)   ; full without the cap
+      (check (contains clipped "a-very-long-value-here") nil)
+      (check (contains clipped "a-very-…") t))              ; 7 chars + ellipsis
+
     ;; footer lists named cells/ranges and environment constants
     (let* ((wb (make-workbook))
            (s (add-sheet wb "S" :environment '((tax . 1/10))))

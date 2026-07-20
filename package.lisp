@@ -46,7 +46,7 @@
    #:workbook->form #:form->workbook
    ;; structural editing + copy/paste
    #:insert-row #:delete-row #:insert-column #:delete-column
-   #:copy-cell #:fill-range #:spill
+   #:copy-cell #:fill-range #:spill #:respill
    ;; named cells and ranges
    #:set-name #:remove-name #:name-ref #:set-range #:range-ref #:map-names
    ;; cell notes / comments
@@ -68,7 +68,7 @@
    #:countif #:sumif #:averageif #:safe-cells
    #:grid #:match #:lookup #:vlookup #:hlookup
    #:sortv #:filterv #:uniquev #:generic-lessp
-   #:concat #:as-text #:text-length #:left #:right #:mid
+   #:concat #:as-text #:to-number #:text-length #:left #:right #:mid
    #:upper #:lower #:trim #:substitute-text
    #:date #:year #:month #:day #:weekday #:now
    #:blankp #:iferror))

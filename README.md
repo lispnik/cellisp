@@ -86,6 +86,7 @@ propagate.) `safe-cells` goes further and skips *errored* cells too.
 (sortv (cells "A1" "A9"))                ; also filterv, uniquev (compose with spill)
 (concat (cell "A1") " " (cell "B1"))     ; text: left, right, mid, upper, lower, trim, substitute-text
 (year (date 2026 7 20))                  ; dates as universal-time: date, year, month, day, weekday, now
+(to-number (cell "A1") 0)                ; coerce numeric text -> number, else a default
 (iferror (/ (cell "A1") (cell "A2")) 0)  ; a value on error; precedents still tracked
 ```
 
@@ -225,6 +226,8 @@ and out-of-band async deliveries from other threads are serialized.
   the source→dest offset while *absolute* (`$`) references stay fixed.
 - **Spill**: `spill` fills a rectangle from an array-valued formula
   (`(spill s "B1" '(mapcar #'1+ (cells "A1" "A3")))`), tracking its inputs.
+  `respill` re-fills and **clears a shrunk block**, sizing to a result whose row
+  count changed (a refreshed feed, a filtered range).
 
 ```lisp
 (set-cell s "B1" '(* (cell "A1") 2))
@@ -309,6 +312,7 @@ grid to a stream (default stdout) — column-letter headers, row numbers, cells 
 (print-workbook wb)               ; each sheet, headed by its name, to *standard-output*
 (print-sheet s :formats f)        ; one sheet, styled
 (print-workbook wb :formulas t)   ; "show formulas" view: =<form> instead of values
+(print-sheet s :max-col-width 16) ; truncate wide cells (…) so the table stays readable
 ```
 
 ```

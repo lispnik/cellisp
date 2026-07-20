@@ -72,6 +72,9 @@
   ;; Merged cells: a list of (top-left . bottom-right) ref rectangles. Metadata
   ;; for a UI — the engine never merges values; the top-left is the anchor.
   (merges '() :type list)
+  ;; Spill extents: anchor-ref -> (rows . cols) of the last SPILL/RESPILL there,
+  ;; so RESPILL can clear a shrunk block. Follows structural edits; serialized.
+  (spills (make-hash-table :test 'equal) :type hash-table)
   ;; Undo/redo of formula edits: each entry is a snapshot alist of
   ;; (ref . formula-or-:absent) — the state to restore.
   (undo-stack '() :type list)

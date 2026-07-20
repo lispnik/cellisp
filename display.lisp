@@ -244,15 +244,23 @@ cell. Forms print in the CELLISP package so operators/refs read cleanly."
                                 (format nil "~A=~A" (car pair) (cdr pair))
                                 (format nil "~A" pair)))))))
 
+(defun %clip (s width)
+  "S truncated to WIDTH chars with a trailing … when longer (WIDTH NIL = no clip)."
+  (if (and width (> (length s) width))
+      (concatenate 'string (subseq s 0 (max 0 (1- width))) "…")
+      s))
+
 (defun print-sheet (sheet &key (stream *standard-output*) formats formulas
-                            (name (sheet-name sheet)))
+                            max-col-width (name (sheet-name sheet)))
   "Render SHEET to STREAM as an aligned text grid — column-letter headers, row
 numbers, cells shown via DISPLAY-VALUE (numbers right-aligned, everything else
 left). With FORMULAS non-NIL each cell shows its formula (\"=<form>\") instead of
-its value, everything left-aligned. FORMATS, if given, styles the values. NAME
-(defaulting to the sheet's own name) prints a heading; NIL prints none. An empty
-sheet prints \"(empty)\". Below the grid, any named cells/ranges and environment
-constants the sheet carries are listed."
+its value, everything left-aligned. FORMATS, if given, styles the values.
+MAX-COL-WIDTH, if given, truncates each cell to that many characters (with a
+trailing …) so a few very wide cells don't blow up the table. NAME (defaulting to
+the sheet's own name) prints a heading; NIL prints none. An empty sheet prints
+\"(empty)\". Below the grid, any named cells/ranges and environment constants the
+sheet carries are listed."
   (when name (format stream "~&~A~%" name))
   (multiple-value-bind (rows cols) (sheet-dimensions sheet)
     (if (or (zerop rows) (zerop cols))
@@ -266,9 +274,10 @@ constants the sheet carries are listed."
           (dotimes (c cols) (setf (aref widths c) (length (nth c headers))))
           (dotimes (r rows)
             (dotimes (c cols)
-              (let ((str (if formulas
-                             (formula-string sheet (cons r c))
-                             (display-value sheet (cons r c) :formats formats))))
+              (let ((str (%clip (if formulas
+                                    (formula-string sheet (cons r c))
+                                    (display-value sheet (cons r c) :formats formats))
+                                max-col-width)))
                 (setf (aref strs r c) str
                       ;; in formula view everything is text -> left-align
                       (aref nums r c) (and (not formulas)
@@ -296,12 +305,14 @@ constants the sheet carries are listed."
   (%print-env sheet stream)
   (values))
 
-(defun print-workbook (workbook &key (stream *standard-output*) formats formulas)
+(defun print-workbook (workbook &key (stream *standard-output*) formats formulas
+                                  max-col-width)
   "Render every sheet of WORKBOOK to STREAM (default stdout), one after another,
 each headed by its name. FORMATS styles the values; FORMULAS non-NIL shows each
-cell's formula instead of its value."
+cell's formula instead of its value; MAX-COL-WIDTH truncates wide cells."
   (loop for s in (workbook-sheets workbook)
         for first = t then nil
         do (unless first (terpri stream))
-           (print-sheet s :stream stream :formats formats :formulas formulas))
+           (print-sheet s :stream stream :formats formats :formulas formulas
+                          :max-col-width max-col-width))
   (values))

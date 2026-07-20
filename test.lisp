@@ -433,6 +433,53 @@ the invariant always held."
     (check (get-value s "C1") 2) (check (get-value s "D1") 4)
     (check (get-value s "C2") 6) (check (get-value s "D2") 8))
 
+  ;; respill clears the previous block when the result shrinks
+  (let ((s (make-sheet)))
+    (set-cell s "Z1" '(quote ((1) (2) (3) (4))))          ; array in a shared cell
+    (respill s "A1" '(cell "Z1"))
+    (check (get-value s "A4") 4)
+    (set-cell s "Z1" '(quote ((9) (8))))                  ; shrink 4 -> 2 rows
+    (respill s "A1" '(cell "Z1"))
+    (check (get-value s "A1") 9)
+    (check (get-value s "A2") 8)
+    (check (get-value s "A3") nil)                        ; leftovers cleared
+    (check (get-value s "A4") nil))
+
+  ;; a spill anchor follows a structural edit, so respill still clears correctly
+  (let ((s (make-sheet)))
+    (set-cell s "Z9" '(quote ((1) (2) (3))))
+    (spill s "A1" '(cell "Z9"))
+    (insert-row s 1)                                      ; A1 -> A2 (anchor shifts)
+    (set-cell s "Z10" '(quote ((7))))                     ; Z9 shifted to Z10
+    (respill s "A2" '(cell "Z10"))                        ; shrink 3 -> 1 at new anchor
+    (check (get-value s "A2") 7)
+    (check (get-value s "A3") nil) (check (get-value s "A4") nil))
+
+  ;; a spill extent round-trips through serialization (respill works after load)
+  (let ((s1 (make-sheet)))
+    (set-cell s1 "Z1" '(quote ((1) (2) (3))))
+    (spill s1 "A1" '(cell "Z1"))
+    (let* ((text (with-output-to-string (o) (write-sheet s1 o)))
+           (s2 (with-input-from-string (i text) (read-sheet i))))
+      (check (get-value s2 "A3") 3)                       ; spilled cells restored
+      (set-cell s2 "Z1" '(quote ((5))))
+      (respill s2 "A1" '(cell "Z1"))                      ; uses the restored extent
+      (check (get-value s2 "A1") 5)
+      (check (get-value s2 "A2") nil) (check (get-value s2 "A3") nil)))
+
+  ;; to-number coerces numeric text, else returns the default
+  (check (to-number 5) 5)
+  (check (to-number "42") 42)
+  (check (to-number "3.14") 3.14)
+  (check (to-number "1/2") 1/2)
+  (check (to-number "1e3") 1000.0)
+  (check (to-number "  7  ") 7)                           ; trims whitespace
+  (check (to-number "3 apples") nil)                     ; partial -> nil
+  (check (to-number "abc") nil)
+  (check (to-number "abc" 0) 0)                          ; default
+  (check (to-number "") nil)
+  (check (to-number nil) nil)
+
   ;; named cells: a name aliases a ref and resolves in formulas
   (let ((s (make-sheet)))
     (set-cell s "A1" 10)
