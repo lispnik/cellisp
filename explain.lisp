@@ -41,7 +41,7 @@ is :state :cycle; one already expanded elsewhere is :state :seen."
                                         (sort (copy-list (cell-precedents cell))
                                               #'string< :key #'ref-string)))
                         (setf (gethash ref done) t)))))))
-        (walk (parse-ref designator) '())))))
+        (walk (resolve-ref-in sheet designator) '())))))
 
 (defun %explain-node-label (node)
   (let ((ref (getf node :ref)))

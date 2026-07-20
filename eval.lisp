@@ -113,23 +113,19 @@ blank later re-fires the reader."
       (progn (note-foreign target ref)
              (if (find-cell target ref) (read-foreign target ref) nil))))
 
+;;; The name-resolution logic lives in sheet.lisp (RESOLVE-REF-IN / %LOOKUP-NAME
+;;; -IN, sheet passed explicitly) so the public API can share it. Inside a formula
+;;; the sheet is the dynamically-bound *SHEET*, so these thin wrappers just supply
+;;; it (and fall back to plain parsing when no sheet is bound).
+
 (defun %lookup-name (designator)
-  "The value DESIGNATOR is bound to in *SHEET*'s names table (a ref or a range
-cons), or NIL. Skipped entirely when the sheet has no names — keeps the hot path
-fast — and only strings/symbols can name anything."
-  (and *sheet*
-       (plusp (hash-table-count (sheet-names *sheet*)))
-       (typep designator '(or string symbol))
-       (gethash (%name-key designator) (sheet-names *sheet*))))
+  "The value DESIGNATOR names in *SHEET* (a ref or a range cons), or NIL."
+  (and *sheet* (%lookup-name-in *sheet* designator)))
 
 (defun resolve-ref (designator)
-  "Resolve DESIGNATOR to a single ref: a registered name on *SHEET* takes
-precedence, otherwise it is parsed as an A1 reference. A range name resolves to
-its top-left corner, so (cell RANGE) reads the block's first cell."
-  (let ((named (%lookup-name designator)))
-    (cond ((null named) (parse-ref designator))
-          ((%range-value-p named) (car named)) ; range name -> its top-left ref
-          (t named))))                          ; single-cell name -> its ref
+  "Resolve DESIGNATOR to a single ref against *SHEET* — a registered name takes
+precedence (a range name yields its top-left), else an A1 parse."
+  (if *sheet* (resolve-ref-in *sheet* designator) (parse-ref designator)))
 
 (defun cell (designator)
   "Read another cell's value. Records the dependency and forces the referenced

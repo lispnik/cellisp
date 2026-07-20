@@ -419,7 +419,7 @@ error, dependency links, and any retained mixin slots) are preserved."
 is produced by the SOURCE thunk, preserving any mixins it already carries.
 Returns the freshly computed value."
   (with-sheet-lock (sheet)
-    (let* ((ref (parse-ref designator))
+    (let* ((ref (resolve-ref-in sheet designator))
            (cell (ensure-cell sheet ref)))
       (unless (cell-writable-p cell) (error 'readonly-cell :ref ref))
       (morph-cell cell 'external-cell (cell-mixins cell))
@@ -431,7 +431,7 @@ Returns the freshly computed value."
   "Install (or convert the cell at) DESIGNATOR as an ASYNC-CELL with the given
 FETCHER and INITIAL value, preserving any mixins. Returns the initial value."
   (with-sheet-lock (sheet)
-    (let* ((ref (parse-ref designator))
+    (let* ((ref (resolve-ref-in sheet designator))
            (cell (ensure-cell sheet ref)))
       (unless (cell-writable-p cell) (error 'readonly-cell :ref ref))
       (morph-cell cell 'async-cell (cell-mixins cell))
@@ -447,7 +447,7 @@ FETCHER and INITIAL value, preserving any mixins. Returns the initial value."
 fetcher should start its work and return promptly; it delivers the value by
 calling the supplied callback, which routes to DELIVER-ASYNC."
   (with-sheet-lock (sheet)
-    (let* ((ref (parse-ref designator))
+    (let* ((ref (resolve-ref-in sheet designator))
            (cell (find-cell sheet ref)))
       (when (and (typep cell 'async-cell) (not (async-pending cell)))
         (setf (async-pending cell) t)
@@ -459,7 +459,7 @@ calling the supplied callback, which routes to DELIVER-ASYNC."
   "Store VALUE into an async cell (typically from the fetcher's callback, on
 any thread) and recompute its dependents. No-op for a non-async/missing cell."
   (with-sheet-lock (sheet)
-    (let* ((ref (parse-ref designator))
+    (let* ((ref (resolve-ref-in sheet designator))
            (cell (find-cell sheet ref)))
       (when (typep cell 'async-cell)
         (setf (cell-value cell) value
@@ -475,7 +475,7 @@ any thread) and recompute its dependents. No-op for a non-async/missing cell."
 its kind. Volatility is an attribute in the sheet registry, not a cell class,
 so it composes with formula/external/async/observed cells alike."
   (with-sheet-lock (sheet)
-    (set-cell-volatile sheet (parse-ref designator) volatile)
+    (set-cell-volatile sheet (resolve-ref-in sheet designator) volatile)
     volatile))
 
 (defun set-readonly (sheet designator readonly)
@@ -484,7 +484,7 @@ READONLY-MIXIN. Composes with any value source and other mixins; the cell
 still recomputes from its precedents while locked. This driver itself is the
 escape hatch and is never blocked."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (if readonly
           (add-mixin cell 'readonly-mixin)
           (remove-mixin cell 'readonly-mixin)))
@@ -494,7 +494,7 @@ escape hatch and is never blocked."
   "Start (or stop) recording DESIGNATOR's value history, keeping at most LIMIT
 entries (NIL = unbounded). Read the history back with CELL-LOG."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (if logged
           (progn (add-mixin cell 'logged-mixin)
                  (setf (cell-log-limit cell) limit))
@@ -505,7 +505,7 @@ entries (NIL = unbounded). Read the history back with CELL-LOG."
   "DESIGNATOR's recorded value history, oldest first (empty unless the cell is
 logged; consecutive duplicate values are collapsed)."
   (with-sheet-lock (sheet)
-    (let ((cell (find-cell sheet (parse-ref designator))))
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
       (if (typep cell 'logged-mixin)
           (reverse (cell-history cell))
           '()))))
@@ -515,7 +515,7 @@ logged; consecutive duplicate values are collapsed)."
 only when a precedent's value changed since its last run. Composes with any
 value source or other mixin."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (if cached
           (add-mixin cell 'cached-mixin)
           (remove-mixin cell 'cached-mixin)))
@@ -526,7 +526,7 @@ value source or other mixin."
 which sees CELL and ARG) or, when ARG is NIL, removes it. Returns ARG."
   `(defun ,name (sheet designator arg)
      (with-sheet-lock (sheet)
-       (let ((cell (ensure-cell sheet (parse-ref designator))))
+       (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
          (cond (arg (add-mixin cell ',mixin) ,@setup)
                (t (remove-mixin cell ',mixin))))
        arg)))
@@ -550,7 +550,7 @@ which sees CELL and ARG) or, when ARG is NIL, removes it. Returns ARG."
   "Make DESIGNATOR write-once (its formula can be set while empty but not
 changed thereafter), or lift that restriction."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (if append-only
           (add-mixin cell 'append-only-mixin)
           (remove-mixin cell 'append-only-mixin)))
@@ -561,7 +561,7 @@ changed thereafter), or lift that restriction."
 and skipped during recomputation, whatever changes around it. Volatility-like,
 it is a registry attribute, not a class, so it composes with any cell."
   (with-sheet-lock (sheet)
-    (let ((ref (parse-ref designator)))
+    (let ((ref (resolve-ref-in sheet designator)))
       (if frozen
           (setf (gethash ref (sheet-frozen sheet)) t)
           (remhash ref (sheet-frozen sheet))))
@@ -571,7 +571,7 @@ it is a registry attribute, not a class, so it composes with any cell."
   "Start (or stop) recording DESIGNATOR's formula-edit history; seed it with
 the current formula. Read the history with CELL-VERSIONS."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (cond (versioned
              (add-mixin cell 'versioned-mixin)
              (when (and (cell-formula cell) (null (formula-versions cell)))
@@ -583,7 +583,7 @@ the current formula. Read the history with CELL-VERSIONS."
   "The formulas assigned to DESIGNATOR over time, oldest first (empty unless
 versioned)."
   (with-sheet-lock (sheet)
-    (let ((cell (find-cell sheet (parse-ref designator))))
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
       (if (typep cell 'versioned-mixin)
           (reverse (formula-versions cell))
           '()))))
@@ -594,7 +594,7 @@ versioned)."
   "The audit trail for DESIGNATOR — a list of (:time T :actor A :formula F)
 plists, oldest first (empty unless audited)."
   (with-sheet-lock (sheet)
-    (let ((cell (find-cell sheet (parse-ref designator))))
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
       (if (typep cell 'audited-mixin)
           (reverse (audit-log cell))
           '()))))
@@ -602,14 +602,14 @@ plists, oldest first (empty unless audited)."
 (defun set-timed (sheet designator timed)
   "Enable (or disable) per-recompute timing on DESIGNATOR; read CELL-TIMING."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (if timed (add-mixin cell 'timed-mixin) (remove-mixin cell 'timed-mixin)))
     timed))
 
 (defun cell-timing (sheet designator)
   "Return (values total-run-time run-count) for a timed cell, else NIL,NIL."
   (with-sheet-lock (sheet)
-    (let ((cell (find-cell sheet (parse-ref designator))))
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
       (if (typep cell 'timed-mixin)
           (values (timed-total cell) (timed-count cell))
           (values nil nil)))))
@@ -618,7 +618,7 @@ plists, oldest first (empty unless audited)."
   "Cache DESIGNATOR's value for TTL time units (0 / NIL disables). CLOCK is a
 thunk returning the current time (default: GET-INTERNAL-REAL-TIME)."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (cond ((and ttl (plusp ttl))
              (add-mixin cell 'ttl-cached-mixin)
              (setf (cell-ttl cell) ttl (ttl-stamp cell) nil)
@@ -631,7 +631,7 @@ thunk returning the current time (default: GET-INTERNAL-REAL-TIME)."
   "Subscribe CALLBACK but leading-edge throttle it: fire on a change
 immediately, then suppress for INTERVAL (per CLOCK, default real time)."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (add-mixin cell 'throttled-mixin)
       (setf (throttle-interval cell) interval)
       (when clock-supplied (setf (throttle-clock cell) clock))
@@ -642,7 +642,7 @@ immediately, then suppress for INTERVAL (per CLOCK, default real time)."
   "Subscribe CALLBACK to fire only when DESIGNATOR crosses LEVEL, with
 arguments (:above/:below value)."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (add-mixin cell 'threshold-mixin)
       (setf (threshold-level cell) level)
       ;; seed the side from the current value so only genuine crossings fire
@@ -655,14 +655,14 @@ arguments (:above/:below value)."
 (defun set-stats (sheet designator stats)
   "Enable (or disable) running count/sum/min/max on DESIGNATOR; read CELL-STATS."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (if stats (add-mixin cell 'stats-mixin) (remove-mixin cell 'stats-mixin)))
     stats))
 
 (defun cell-stats (sheet designator)
   "Return a plist (:count :sum :min :max :mean) for a stats cell, else NIL."
   (with-sheet-lock (sheet)
-    (let ((cell (find-cell sheet (parse-ref designator))))
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
       (when (typep cell 'stats-mixin)
         (list :count (stats-count cell) :sum (stats-sum cell)
               :min (stats-min cell) :max (stats-max cell)
@@ -673,7 +673,7 @@ arguments (:above/:below value)."
   "Call SINK (a function of the value) whenever DESIGNATOR changes; NIL to
 disable."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (cond (sink (add-mixin cell 'persisted-mixin)
                   (setf (persist-sink cell) sink))
             (t (remove-mixin cell 'persisted-mixin))))
@@ -686,7 +686,7 @@ once, with the settled value, after changes stop — each change (re)schedules
 the fire via SCHEDULER (a function of a thunk that runs it after the debounce
 interval). Promotes the cell to carry DEBOUNCED-MIXIN."
   (with-sheet-lock (sheet)
-    (let ((cell (ensure-cell sheet (parse-ref designator))))
+    (let ((cell (ensure-cell sheet (resolve-ref-in sheet designator))))
       (add-mixin cell 'debounced-mixin)
       (setf (debounce-scheduler cell) scheduler)
       (pushnew callback (debounce-subscribers cell))
@@ -700,7 +700,7 @@ DESIGNATOR's value changes after a sweep. Composes with the cell's existing
 kind: OBSERVABLE-MIXIN is layered on in place, preserving value source, other
 mixins, and dependency links."
   (with-sheet-lock (sheet)
-    (let* ((ref (parse-ref designator))
+    (let* ((ref (resolve-ref-in sheet designator))
            (cell (ensure-cell sheet ref)))
       (add-mixin cell 'observable-mixin)
       (pushnew callback (cell-subscribers cell))
@@ -711,7 +711,7 @@ mixins, and dependency links."
 gone, drop OBSERVABLE-MIXIN from the cell (keeping its value source and other
 mixins)."
   (with-sheet-lock (sheet)
-    (let ((cell (find-cell sheet (parse-ref designator))))
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
       (when (typep cell 'observable-mixin)
         (setf (cell-subscribers cell)
               (remove callback (cell-subscribers cell)))

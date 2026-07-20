@@ -106,7 +106,12 @@ References are A1-style strings. `$` marks absoluteness for copy/paste
 ```lisp
 (set-name s "price" "A1")
 (set-cell s "B1" '(* (cell "price") 2))
+(get-value s "price")                     ; => 20
+(set-cell s "price" 15)                    ; the whole public API takes a name
 ```
+
+A name works **anywhere an A1 ref does** — in formulas *and* through the public
+API (`get-value`, `set-cell`, `clear-cell`, `set-note`, the mixin drivers, …).
 
 A name can also alias a whole **range**, read with the one-argument form of
 `cells` (which also accepts a single cell as a 1×1 range):
@@ -322,6 +327,10 @@ optionally scoped to a column):
 (add-conditional f #'minusp (lambda (v) (format nil "(~A)" (abs v))))  ; parenthesize negatives
 (add-conditional f #'zerop "—" :column "B")                            ; blank zeros in column B
 ```
+
+Cell/column formats and rules may be **sheet-qualified** (`"Sales!D5"`,
+`"Sales!B"`, `:sheet "Summary"`), so one registry can style a whole workbook,
+each sheet differently — most specific scope wins.
 
 ### Cell metadata
 

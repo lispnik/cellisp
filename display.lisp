@@ -107,60 +107,86 @@ is returned verbatim (a literal replacement, handy for conditional rules)."
 ;;;; --- format registry (display-owned, not serialized) ----------------
 
 (defstruct (formats (:constructor %make-formats))
-  ;; parse-ref key -> spec, and column-index -> spec (a column default).
+  ;; key -> spec. A cell key is a ref (row . col) for a global rule, or a
+  ;; (sheet-name . ref) cons for a sheet-scoped one; a column key is an index, or
+  ;; a (sheet-name . index) cons. Sheet names are upcased. Both tables use EQUAL.
   (cells (make-hash-table :test 'equal) :type hash-table)
-  (columns (make-hash-table :test 'eql) :type hash-table)
-  ;; conditional-format rules, in order: each (predicate spec column-or-nil).
+  (columns (make-hash-table :test 'equal) :type hash-table)
+  ;; conditional rules, in order: each (predicate spec column-or-nil sheet-or-nil).
   (rules '() :type list))
 
 (defun make-formats () "An empty format registry." (%make-formats))
 
-(defun set-format (formats designator spec)
-  "Set the display SPEC for a single cell (an A1 string or ref cons). Returns SPEC."
-  (setf (gethash (parse-ref designator) (formats-cells formats)) spec))
-
-(defun set-column-format (formats column spec)
-  "Set a default display SPEC for a whole COLUMN. COLUMN is a 0-based index or a
-column-letter string (\"A\", \"AA\"); a single letter is parsed via its A1 form.
-Returns SPEC."
-  (let ((col (if (integerp column)
-                 column
-                 (ref-col (parse-ref (format nil "~A1" column))))))
-    (setf (gethash col (formats-columns formats)) spec)))
-
-(defun format-for (formats designator)
-  "The effective *static* SPEC for DESIGNATOR: a cell-specific format wins over a
-column default, which wins over :GENERAL. (Conditional rules are applied
-separately, by DISPLAY-VALUE, since they depend on the cell's value.)"
-  (let ((ref (parse-ref designator)))
-    (or (gethash ref (formats-cells formats))
-        (gethash (ref-col ref) (formats-columns formats))
-        :general)))
+(defun %split-sheet (designator)
+  "For a sheet-qualified designator like \"Sales!D5\" return (values \"SALES\"
+\"D5\") — sheet name upcased. Otherwise (values NIL designator)."
+  (if (typep designator '(or string symbol))
+      (let* ((s (string designator)) (bang (position #\! s)))
+        (if bang
+            (values (string-upcase (subseq s 0 bang)) (subseq s (1+ bang)))
+            (values nil designator)))
+      (values nil designator)))
 
 (defun %column-index (column)
   (if (integerp column) column
       (ref-col (parse-ref (format nil "~A1" column)))))
 
-(defun add-conditional (formats predicate spec &key column)
+(defun set-format (formats designator spec)
+  "Set the display SPEC for a single cell. DESIGNATOR is an A1 string or ref cons,
+optionally sheet-qualified (\"Sales!D5\") to scope the rule to that sheet — which
+matters when one registry styles a whole workbook. Returns SPEC."
+  (multiple-value-bind (sheet local) (%split-sheet designator)
+    (let ((ref (parse-ref local)))
+      (setf (gethash (if sheet (cons sheet ref) ref) (formats-cells formats))
+            spec))))
+
+(defun set-column-format (formats column spec)
+  "Set a default display SPEC for a whole COLUMN — a 0-based index or a column
+letter (\"A\", \"AA\"), optionally sheet-qualified (\"Sales!B\"). Returns SPEC."
+  (multiple-value-bind (sheet col) (%split-sheet column)
+    (let ((idx (%column-index col)))
+      (setf (gethash (if sheet (cons sheet idx) idx) (formats-columns formats))
+            spec))))
+
+(defun format-for (formats designator &optional context-sheet)
+  "The effective *static* SPEC for DESIGNATOR: most specific wins — a sheet-scoped
+cell format, then a global cell format, then a sheet-scoped column default, then a
+global column default, then :GENERAL. The sheet is DESIGNATOR's own qualifier if
+it has one, otherwise CONTEXT-SHEET (what DISPLAY-VALUE passes)."
+  (multiple-value-bind (dsheet local) (%split-sheet designator)
+    (let* ((ref (parse-ref local))
+           (up (or dsheet (and context-sheet (string-upcase (string context-sheet))))))
+      (or (and up (gethash (cons up ref) (formats-cells formats)))
+          (gethash ref (formats-cells formats))
+          (and up (gethash (cons up (ref-col ref)) (formats-columns formats)))
+          (gethash (ref-col ref) (formats-columns formats))
+          :general))))
+
+(defun add-conditional (formats predicate spec &key column sheet)
   "Add a conditional-format rule: a cell whose *value* satisfies PREDICATE renders
 with SPEC instead of its static format. SPEC is any FORMAT-VALUE spec, including a
-function of the value — e.g. wrap negatives in parentheses, or map a status to a
-glyph. COLUMN (an index or letter) scopes the rule to one column; omit it for the
-whole sheet. Rules are tried in order and the first match wins. Returns FORMATS."
+function of the value or a literal string. COLUMN (index or letter) and/or SHEET
+(name) scope the rule; omit both for the whole workbook. Rules are tried in order,
+first match wins. Returns FORMATS."
   (setf (formats-rules formats)
         (append (formats-rules formats)
-                (list (list predicate spec (and column (%column-index column))))))
+                (list (list predicate spec
+                            (and column (%column-index column))
+                            (and sheet (string-upcase (string sheet)))))))
   formats)
 
-(defun conditional-spec (formats designator value)
-  "The SPEC of the first conditional rule matching VALUE at DESIGNATOR, or NIL.
-PREDICATE is applied defensively, so a rule that errors on a value just doesn't
-match."
-  (let ((col (ref-col (parse-ref designator))))
-    (loop for (predicate spec rule-col) in (formats-rules formats)
-          when (and (or (null rule-col) (= rule-col col))
-                    (ignore-errors (funcall predicate value)))
-            do (return spec))))
+(defun conditional-spec (formats designator value &optional context-sheet)
+  "The SPEC of the first conditional rule matching VALUE at DESIGNATOR (in its
+column and sheet scope), or NIL. PREDICATE is applied defensively, so a rule that
+errors on a value just doesn't match."
+  (multiple-value-bind (dsheet local) (%split-sheet designator)
+    (let ((col (ref-col (parse-ref local)))
+          (up (or dsheet (and context-sheet (string-upcase (string context-sheet))))))
+      (loop for (predicate spec rule-col rule-sheet) in (formats-rules formats)
+            when (and (or (null rule-col) (= rule-col col))
+                      (or (null rule-sheet) (equal rule-sheet up))
+                      (ignore-errors (funcall predicate value)))
+              do (return spec)))))
 
 ;;;; --- top level ------------------------------------------------------
 
@@ -174,9 +200,11 @@ otherwise its value formatted per FORMATS (a registry from MAKE-FORMATS) or
           (t (format-value
               value
               (if formats
-                  ;; a matching conditional rule overrides the static format
-                  (or (conditional-spec formats designator value)
-                      (format-for formats designator))
+                  ;; sheet-aware: a rule/format scoped to this sheet can match,
+                  ;; and a matching conditional rule overrides the static format
+                  (let ((name (sheet-name sheet)))
+                    (or (conditional-spec formats designator value name)
+                        (format-for formats designator name)))
                   :general))))))
 
 ;;;; --- console rendering ----------------------------------------------

@@ -77,7 +77,7 @@
     (set-column-format f "B" '(:currency "$" 0))
     (set-column-format f "C" '(:currency "$" 0))
     (set-column-format f "D" '(:currency "$" 0))
-    (set-format f "B7" '(:fixed 1))     ; Summary!B7 is a margin %, not dollars
+    (set-format f "Summary!B7" '(:fixed 1)) ; sheet-qualified: the margin %, not $
     ;; make a loss stand out: negative money in parentheses
     (add-conditional f #'minusp (lambda (v) (format nil "($~:D)" (abs (round v)))))
     f))

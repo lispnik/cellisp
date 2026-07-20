@@ -170,16 +170,6 @@ registry — any kind of cell can be volatile."
       (setf (gethash ref (sheet-volatiles sheet)) t)
       (remhash ref (sheet-volatiles sheet))))
 
-(defun volatile-p (sheet designator)
-  "True if DESIGNATOR is registered volatile on SHEET."
-  (with-sheet-lock (sheet)
-    (and (gethash (parse-ref designator) (sheet-volatiles sheet)) t)))
-
-(defun frozen-p (sheet designator)
-  "True if DESIGNATOR is frozen (held at its value, not recomputed)."
-  (with-sheet-lock (sheet)
-    (and (gethash (parse-ref designator) (sheet-frozen sheet)) t)))
-
 (defun %name-key (name) (string-upcase (string name)))
 
 ;;; The names table maps an upcased name to either a single cell (a ref, i.e. an
@@ -188,11 +178,41 @@ registry — any kind of cell can be volatile."
 ;;; distinction matters — RESOLVE-REF, CELLS, structural shifting, serialization.
 (defun %range-value-p (val) (consp (car val)))
 
+(defun %lookup-name-in (sheet desig)
+  "The value DESIG names in SHEET (a single ref, or a range's (tl . br) cons), or
+NIL. Only strings/symbols name anything, and the lookup is skipped when the sheet
+has no names — keeping the hot path fast."
+  (and (plusp (hash-table-count (sheet-names sheet)))
+       (typep desig '(or string symbol))
+       (gethash (%name-key desig) (sheet-names sheet))))
+
+(defun resolve-ref-in (sheet desig)
+  "Resolve DESIG to a single ref in SHEET: a registered name takes precedence (a
+range name yields its top-left corner), otherwise DESIG is parsed as an A1
+reference. This is what lets the public API (GET-VALUE, SET-CELL, the notes/
+attributes/mixin drivers, …) accept a cell *name* anywhere it accepts an A1 ref
+— the same resolution a formula's CELL operator does, but with the sheet passed
+explicitly rather than taken from *SHEET*."
+  (let ((named (%lookup-name-in sheet desig)))
+    (cond ((null named) (parse-ref desig))
+          ((%range-value-p named) (car named))   ; range name -> its top-left
+          (t named))))
+
+(defun volatile-p (sheet designator)
+  "True if DESIGNATOR is registered volatile on SHEET."
+  (with-sheet-lock (sheet)
+    (and (gethash (resolve-ref-in sheet designator) (sheet-volatiles sheet)) t)))
+
+(defun frozen-p (sheet designator)
+  "True if DESIGNATOR is frozen (held at its value, not recomputed)."
+  (with-sheet-lock (sheet)
+    (and (gethash (resolve-ref-in sheet designator) (sheet-frozen sheet)) t)))
+
 (defun set-name (sheet name designator)
   "Bind NAME (a string or symbol, case-insensitive) as an alias for the cell at
 DESIGNATOR, so formulas may write (cell NAME). Returns NAME."
   (with-sheet-lock (sheet)
-    (setf (gethash (%name-key name) (sheet-names sheet)) (parse-ref designator))
+    (setf (gethash (%name-key name) (sheet-names sheet)) (resolve-ref-in sheet designator))
     name))
 
 (defun set-range (sheet name top-left bottom-right)
@@ -228,7 +248,7 @@ names a single cell rather than a range."
 \"\" to remove the note. A note is metadata: it needs no cell to exist, follows
 its cell across structural edits, and is serialized. Returns TEXT."
   (with-sheet-lock (sheet)
-    (let ((ref (parse-ref designator)))
+    (let ((ref (resolve-ref-in sheet designator)))
       (if (or (null text) (and (stringp text) (string= text "")))
           (remhash ref (sheet-notes sheet))
           (setf (gethash ref (sheet-notes sheet)) text)))
@@ -237,12 +257,12 @@ its cell across structural edits, and is serialized. Returns TEXT."
 (defun cell-note (sheet designator)
   "The note on the cell at DESIGNATOR, or NIL."
   (with-sheet-lock (sheet)
-    (gethash (parse-ref designator) (sheet-notes sheet))))
+    (gethash (resolve-ref-in sheet designator) (sheet-notes sheet))))
 
 (defun remove-note (sheet designator)
   "Remove any note on the cell at DESIGNATOR."
   (with-sheet-lock (sheet)
-    (remhash (parse-ref designator) (sheet-notes sheet)))
+    (remhash (resolve-ref-in sheet designator) (sheet-notes sheet)))
   (values))
 
 (defun map-notes (fn sheet)
@@ -288,13 +308,13 @@ rectangle overlaps an existing merge. Returns the (tl . br) merge."
 (defun merged-range (sheet designator)
   "The (tl . br) merge containing the cell at DESIGNATOR, or NIL."
   (with-sheet-lock (sheet)
-    (let ((ref (parse-ref designator)))
+    (let ((ref (resolve-ref-in sheet designator)))
       (find-if (lambda (m) (ref-in-rect-p ref m)) (sheet-merges sheet)))))
 
 (defun unmerge-cells (sheet designator)
   "Remove the merge covering the cell at DESIGNATOR, if any."
   (with-sheet-lock (sheet)
-    (let ((ref (parse-ref designator)))
+    (let ((ref (resolve-ref-in sheet designator)))
       (setf (sheet-merges sheet)
             (remove-if (lambda (m) (ref-in-rect-p ref m)) (sheet-merges sheet)))))
   (values))

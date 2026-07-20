@@ -125,7 +125,7 @@ one recomputed on every recalc regardless of whether a precedent changed
 (cf. RAND()/NOW()). Volatility is sticky: it only changes when the keyword
 is explicitly passed, so re-setting a formula doesn't silently demote it."
   (with-sheet-lock (sheet)
-    (let* ((ref (parse-ref designator))
+    (let* ((ref (resolve-ref-in sheet designator))
            (snapshot (capture-cells sheet (list ref)))   ; before ENSURE (:absent if new)
            (cell (ensure-cell sheet ref)))
       (unless (cell-writable-p cell formula) (error 'readonly-cell :ref ref))
@@ -159,7 +159,7 @@ for a cell that errored). A later pair for the same cell wins."
   (with-sheet-lock (sheet)
     ;; guard first: refuse the whole batch if any existing target is read-only
     (dolist (pair bindings)
-      (let* ((ref (parse-ref (first pair)))
+      (let* ((ref (resolve-ref-in sheet (first pair)))
              (existing (find-cell sheet ref)))
         (when (and existing (not (cell-writable-p existing (second pair))))
           (error 'readonly-cell :ref ref))))
@@ -167,7 +167,7 @@ for a cell that errored). A later pair for the same cell wins."
                                                   bindings)))
     (let* ((time (funcall *audit-clock*))    ; one timestamp for the whole batch
            (refs (loop for (designator formula) in bindings
-                       for ref = (parse-ref designator)
+                       for ref = (resolve-ref-in sheet designator)
                        for cell = (ensure-cell sheet ref)
                        do (note-set cell sheet ref formula *actor* time)
                           (setf (cell-formula cell) formula)
@@ -184,7 +184,7 @@ for a cell that errored). A later pair for the same cell wins."
   "Empty a cell and recompute its dependents (which will now error if
 they still read it)."
   (with-sheet-lock (sheet)
-    (let* ((ref (parse-ref designator))
+    (let* ((ref (resolve-ref-in sheet designator))
            (cell (find-cell sheet ref)))
       (when cell
         (unless (cell-writable-p cell) (error 'readonly-cell :ref ref))
@@ -211,25 +211,25 @@ they still read it)."
 (defun get-value (sheet designator)
   "Return (values value error-or-nil) for a cell. Empty cell -> NIL,NIL."
   (with-sheet-lock (sheet)
-    (let ((cell (find-cell sheet (parse-ref designator))))
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
       (if cell
           (values (cell-value cell) (cell-err cell))
           (values nil nil)))))
 
 (defun get-formula (sheet designator)
   (with-sheet-lock (sheet)
-    (let ((cell (find-cell sheet (parse-ref designator))))
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
       (and cell (cell-formula cell)))))
 
 (defun dependents (sheet designator)
   "Direct dependents of a cell, as ref conses."
   (with-sheet-lock (sheet)
-    (let ((cell (find-cell sheet (parse-ref designator))))
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
       (and cell (copy-list (cell-dependents cell))))))
 
 (defun precedents (sheet designator)
   (with-sheet-lock (sheet)
-    (let ((cell (find-cell sheet (parse-ref designator))))
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
       (and cell (copy-list (cell-precedents cell))))))
 
 ;;;; ------------------------------------------------------------------
@@ -410,7 +410,7 @@ loading, when all sheets and their cross-references are finally in place."
 (defun recalc (sheet designator)
   "Force recomputation of one cell and its dependents."
   (with-sheet-lock (sheet)
-    (recompute-closure sheet (list (parse-ref designator)))
+    (recompute-closure sheet (list (resolve-ref-in sheet designator)))
     (get-value sheet designator)))
 
 (defun recalc-all (sheet)

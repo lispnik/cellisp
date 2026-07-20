@@ -204,6 +204,22 @@
     (add-conditional f #'plusp '(:fixed 1))       ; plusp of a string errors -> skip
     (check (display-value s "A1" :formats f) "text"))
 
+  ;; sheet-qualified formats: one registry styles a whole workbook per sheet
+  (let* ((wb (make-workbook)) (a (add-sheet wb "Sales")) (b (add-sheet wb "Summary"))
+         (f (make-formats)))
+    (set-cell a "D5" 1000) (set-cell b "D5" 1/2)
+    (set-format f "Sales!D5" '(:currency "$" 0))   ; sheet-scoped cell
+    (set-column-format f "Summary!D" '(:percent 0)) ; sheet-scoped column
+    (add-conditional f #'minusp "(neg)" :sheet "Summary") ; sheet-scoped rule
+    (check (display-value a "D5" :formats f) "$1000") ; Sales cell rule
+    (check (display-value b "D5" :formats f) "50%")   ; Summary column rule
+    (set-cell a "E1" -3) (set-cell b "E1" -3)
+    (check (display-value b "E1" :formats f) "(neg)") ; Summary conditional
+    (check (display-value a "E1" :formats f) "-3")    ; Sales: rule doesn't apply
+    ;; format-for also accepts an explicit qualifier directly
+    (check (format-for f "Sales!D5") '(:currency "$" 0))
+    (check (format-for f "Summary!D5") '(:percent 0)))
+
   ;; --- console rendering --------------------------------------------
 
   (flet ((contains (haystack needle)

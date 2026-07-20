@@ -541,6 +541,23 @@ the invariant always held."
     (check (ref-row (cdr (used-range s))) 4)             ; ref-row/-col exported
     (check (ref-col (cdr (used-range s))) 3))
 
+  ;; the public API resolves cell NAMES, not just A1 refs (like a formula does)
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10)
+    (set-name s "price" "A1")
+    (set-range s "blk" "A1" "A3")
+    (check (get-value s "price") 10)                     ; read by name
+    (set-cell s "price" 25)                              ; write by name
+    (check (get-value s "A1") 25)                        ; hit the aliased cell
+    (check (get-formula s "price") 25)
+    (set-note s "price" "unit price")                    ; note by name
+    (check (cell-note s "price") "unit price")
+    (set-volatile s "price" t)                           ; attribute by name
+    (check (volatile-p s "price") t)
+    (clear-cell s "price")                               ; clear by name
+    (check (get-value s "A1") nil)
+    (check (get-value s "blk") nil))                     ; range name -> top-left
+
   ;; a referenced-empty cell makes a placeholder but doesn't extend used-range
   (let ((s (make-sheet)))
     (set-cell s "A1" 10)
