@@ -56,3 +56,17 @@ fetch avoids blocking the recompute under the sheet lock; `spill` doesn't clear 
 shrunk block itself, so the driver clears the prior rectangle before each
 re-spill; `parse-field` is minimal (no quoted-comma handling) — use `cl-csv` for
 real data.
+
+### `csv-spill-live.lisp` — the same, against a real HTTPS endpoint
+
+Fetches a **live** public feed — Microsoft's Office 365 IP/URL list
+(`endpoints.office.com`, `format=CSV`) — over HTTPS with `dexador`, and spills it.
+Two real-world upgrades over `csv-spill.lisp`: dexador (HTTPS, pulls `cl+ssl`) and
+a **quote-aware RFC-4180 CSV parser** (the IP-list fields are double-quoted and
+comma-packed). The dump truncates wide cells so it stays readable. Switching the
+`ServiceAreas` (Exchange → SharePoint) re-fetches a different-sized feed and
+re-spills — e.g. 51 vs 52 rows × 11 cols.
+
+```bash
+sbcl --script examples/csv-spill-live.lisp     # needs internet + dexador
+```
