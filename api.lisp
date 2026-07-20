@@ -57,6 +57,64 @@ was undone, NIL if the undo stack was empty."
         (restore-cells sheet entry)
         t))))
 
+;;; --- atomic transactions --------------------------------------------
+
+(defun %sheet-snapshot (sheet)
+  "A hash-table ref -> formula of every current cell — the pre-transaction state."
+  (let ((h (make-hash-table :test 'equal)))
+    (map-cells (lambda (ref cell) (setf (gethash ref h) (cell-formula cell))) sheet)
+    h))
+
+(defun %restore-snapshot (sheet snapshot)
+  "Roll SHEET back to SNAPSHOT: clear any cell created since, restore the rest.
+Runs with recording off and recompute live (a full sweep)."
+  (let ((*recording* nil) (*deferred* nil) (created '()))
+    (map-cells (lambda (ref cell)
+                 (declare (ignore cell))
+                 (multiple-value-bind (f present) (gethash ref snapshot)
+                   (declare (ignore f))
+                   (unless present (push ref created))))
+               sheet)
+    (dolist (ref created) (clear-cell sheet ref))
+    (let ((sets '()))
+      (maphash (lambda (ref formula) (push (list ref formula) sets)) snapshot)
+      (when sets (set-cells sheet sets)))))
+
+(defun call-with-transaction (sheet thunk)
+  "See WITH-TRANSACTION. Nested calls join the enclosing transaction."
+  (if *deferred*
+      (funcall thunk)                          ; already in a transaction: join it
+      (with-sheet-lock (sheet)
+        (let ((snapshot (%sheet-snapshot sheet))
+              (seeds (make-hash-table :test 'equal))
+              (committed nil))
+          (unwind-protect
+               (progn
+                 ;; body: edits install formulas and collect seeds, no recompute,
+                 ;; no per-edit undo (one combined entry is pushed at commit).
+                 (let ((*deferred* seeds) (*recording* nil)) (funcall thunk))
+                 ;; commit: one undo entry for the whole transaction, one sweep.
+                 (let ((touched (loop for r being the hash-keys of seeds collect r)))
+                   (push-undo sheet
+                              (loop for r in touched
+                                    collect (cons r (multiple-value-bind (f present)
+                                                        (gethash r snapshot)
+                                                      (if present f :absent)))))
+                   (recompute-closure sheet touched))
+                 (setf committed t))
+            (unless committed
+              (%restore-snapshot sheet snapshot)))))))
+
+(defmacro with-transaction ((sheet) &body body)
+  "Run BODY as one atomic edit of SHEET: the cell mutations inside (SET-CELL,
+SET-CELLS, CLEAR-CELL) install their formulas but defer recomputation, so the
+whole group recomputes in a *single* sweep on commit and is one undo step. If
+BODY signals, the sheet is rolled back to its pre-transaction state and the
+condition propagates. Note: because recompute is deferred, a cell read inside
+BODY still shows its pre-transaction value; transactions are for atomic commit,
+not intra-body reads. Single sheet only."
+  `(call-with-transaction ,sheet (lambda () ,@body)))
+
 (defun set-cell (sheet designator formula &key (volatile nil volatile-supplied-p))
   "Store FORMULA in the cell at DESIGNATOR and recompute it together
 with everything (transitively) depending on it. Returns the new value
@@ -76,10 +134,15 @@ is explicitly passed, so re-setting a formula doesn't silently demote it."
       (setf (cell-formula cell) formula)
       (when volatile-supplied-p
         (set-cell-volatile sheet ref volatile))
-      (recompute-closure sheet (list ref))
-      (if (cell-err cell)
-          (error (cell-err cell))
-          (cell-value cell)))))
+      (cond
+        (*deferred*                          ; inside a transaction: defer recompute
+         (setf (gethash ref *deferred*) t)
+         formula)
+        (t
+         (recompute-closure sheet (list ref))
+         (if (cell-err cell)
+             (error (cell-err cell))
+             (cell-value cell)))))))
 
 (defun set-cells (sheet bindings)
   "Install several formulas at once, then recompute their combined closure
@@ -109,8 +172,13 @@ for a cell that errored). A later pair for the same cell wins."
                        do (note-set cell sheet ref formula *actor* time)
                           (setf (cell-formula cell) formula)
                        collect ref)))
-      (recompute-closure sheet refs)
-      (mapcar (lambda (r) (get-value sheet r)) refs))))
+      (cond
+        (*deferred*                          ; inside a transaction: defer recompute
+         (dolist (r refs) (setf (gethash r *deferred*) t))
+         (mapcar (lambda (r) (declare (ignore r)) nil) refs))
+        (t
+         (recompute-closure sheet refs)
+         (mapcar (lambda (r) (get-value sheet r)) refs))))))
 
 (defun clear-cell (sheet designator)
   "Empty a cell and recompute its dependents (which will now error if
@@ -131,8 +199,13 @@ they still read it)."
           (when (cell-foreign-precedents cell) (detach-foreign sheet ref cell))
           (remhash ref (sheet-cells sheet))
           (remhash ref (sheet-volatiles sheet)) ; drop from the volatile registry
-          ;; the cleared cell won't recompute itself, so report it explicitly.
-          (recompute-closure sheet deps :extra-changed (list ref))))
+          (cond
+            (*deferred*                        ; inside a transaction: defer recompute
+             (dolist (d deps) (setf (gethash d *deferred*) t))
+             (setf (gethash ref *deferred*) t))
+            (t
+             ;; the cleared cell won't recompute itself, so report it explicitly.
+             (recompute-closure sheet deps :extra-changed (list ref))))))
       (values))))
 
 (defun get-value (sheet designator)

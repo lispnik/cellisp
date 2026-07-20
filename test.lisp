@@ -609,6 +609,47 @@ the invariant always held."
     (set-cell s "B3" '(blankp (cell "A1")))
     (check (get-value s "B3") nil))                       ; A1 = 5 is not blank
 
+  ;; --- atomic transactions ------------------------------------------
+
+  ;; a transaction commits its edits in a single recompute sweep
+  (let ((s (make-sheet)) (sweeps 0))
+    (set-cell s "A1" 1) (set-cell s "A2" 2)
+    (set-cell s "A3" '(+ (cell "A1") (cell "A2")))
+    (set-change-hook s (lambda (refs) (declare (ignore refs)) (incf sweeps)))
+    (setf sweeps 0)
+    (with-transaction (s)
+      (set-cell s "A1" 10)
+      (set-cell s "A2" 20))
+    (check (get-value s "A3") 30)                         ; both edits applied
+    (check sweeps 1))                                     ; ONE sweep, not two
+
+  ;; a transaction that signals rolls the sheet fully back
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (set-cell s "A2" '(* (cell "A1") 2))
+    (check (get-value s "A2") 2)
+    (check-signals error
+      (with-transaction (s)
+        (set-cell s "A1" 100)                             ; would make A2 = 200
+        (set-cell s "A9" 42)                              ; a brand-new cell
+        (error "abort")))
+    (check (get-value s "A1") 1)                          ; A1 restored
+    (check (get-value s "A2") 2)                          ; dependent restored
+    (check (get-value s "A9") nil))                       ; created cell removed
+
+  ;; a committed transaction is a single undo step
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1) (set-cell s "A2" 2)
+    (with-transaction (s)
+      (set-cell s "A1" 10)
+      (set-cell s "A2" 20)
+      (clear-cell s "A1"))                                ; mix set + clear
+    (check (get-value s "A2") 20)
+    (check (get-value s "A1") nil)
+    (undo s)                                              ; one undo reverts all of it
+    (check (get-value s "A1") 1)
+    (check (get-value s "A2") 2))
+
   ;; undo/redo of a formula edit, cascading to dependents
   (let ((s (make-sheet)))
     (set-cell s "A1" 1)

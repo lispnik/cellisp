@@ -34,6 +34,10 @@ recompute of subtrees whose inputs did not change.")
   "When bound (a hash-table) during COMPUTE-CELL of a cell in a workbook sheet,
 holds the cross-sheet grefs (sheet . ref) the running formula reads. NIL for a
 standalone sheet, so single-sheet evaluation allocates nothing extra.")
+(defvar *deferred* nil
+  "Inside WITH-TRANSACTION this is a hash-table collecting the seed refs of every
+edit, so recomputation is deferred until the transaction commits (one sweep) and
+per-edit undo is replaced by one combined entry. NIL outside a transaction.")
 (defvar *actor* nil
   "Identity of whoever is making the current mutation, recorded by
 AUDITED-MIXIN. Bind it with WITH-ACTOR.")
