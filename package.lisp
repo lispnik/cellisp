@@ -56,4 +56,9 @@
    #:readonly-cell #:invalid-value
    #:cyclic-reference-cells #:cell-eval-error-original
    ;; formula helpers usable inside formulas
-   #:cell #:cells #:sum #:average #:cnt))
+   #:cell #:cells #:sum #:average #:cnt
+   ;; formula standard library (stdlib.lisp)
+   #:minimum #:maximum #:product #:median
+   #:countif #:sumif #:averageif
+   #:grid #:match #:lookup #:vlookup #:hlookup
+   #:blankp #:iferror))

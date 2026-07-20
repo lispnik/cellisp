@@ -546,6 +546,69 @@ the invariant always held."
       (set-cell d2 "A1" 100)                             ; and the graph is live
       (check (get-value s2 "B1") 120)))
 
+  ;; --- formula standard library (stdlib.lisp) -----------------------
+
+  ;; numeric aggregates ignore non-numbers over a range
+  (let ((s (make-sheet)))
+    (dotimes (i 5) (set-cell s (cellisp::make-ref i 0) (* (1+ i) 10)))  ; A1..A5 10..50
+    (set-cell s "A3" "text")                             ; a blank/text hole
+    (set-cell s "B1" '(minimum (cells "A1" "A5")))
+    (set-cell s "B2" '(maximum (cells "A1" "A5")))
+    (set-cell s "B3" '(product 2 3 4))
+    (set-cell s "B4" '(median (cells "A1" "A5")))        ; median of 10 20 40 50
+    (check (get-value s "B1") 10)
+    (check (get-value s "B2") 50)
+    (check (get-value s "B3") 24)
+    (check (get-value s "B4") 30)                         ; (20+40)/2
+    ;; no numeric args: PRODUCT -> 1 (its identity), MINIMUM -> error
+    (set-cell s "C1" '(product "a" "b"))                  ; no numbers among args
+    (check (get-value s "C1") 1)
+    (ignore-errors (set-cell s "C3" '(minimum "a")))      ; no numbers -> error
+    (check (and (nth-value 1 (get-value s "C3")) t) t)
+    (set-cell s "C2" '(median 5 15 25))                   ; odd count -> middle
+    (check (get-value s "C2") 15))
+
+  ;; predicate-filtered aggregates; countif tolerates a predicate that errors
+  (let ((s (make-sheet)))
+    (dotimes (i 5) (set-cell s (cellisp::make-ref i 0) (* (1+ i) 10)))
+    (set-cell s "A3" "text")
+    (set-cell s "B1" '(countif #'plusp (cells "A1" "A5")))   ; plusp of "text" is skipped
+    (set-cell s "B2" '(sumif (lambda (x) (> x 25)) (cells "A1" "A5")))
+    (set-cell s "B3" '(averageif (lambda (x) (>= x 40)) (cells "A1" "A5")))
+    (check (get-value s "B1") 4)                          ; 10 20 40 50 positive
+    (check (get-value s "B2") 90)                         ; 40 + 50
+    (check (get-value s "B3") 45))                        ; (40+50)/2
+
+  ;; 2D grid preserves shape; lookups work over ranges/grids
+  (let ((s (make-sheet)))
+    (set-cell s "D1" "a") (set-cell s "E1" 100)
+    (set-cell s "D2" "b") (set-cell s "E2" 200)
+    (set-cell s "G1" '(grid "D1" "E2"))
+    (check (get-value s "G1") '(("a" 100) ("b" 200)))    ; list of rows
+    (set-cell s "F1" '(vlookup "b" (grid "D1" "E2") 2))
+    (set-cell s "F2" '(hlookup 100 (grid "E1" "E2") 2))  ; match 100 in row1, take row2
+    (set-cell s "F3" '(lookup "a" (cells "D1" "D2") (cells "E1" "E2")))
+    (set-cell s "F4" '(match "b" (cells "D1" "D2")))
+    (set-cell s "F5" '(vlookup "zzz" (grid "D1" "E2") 2 -1))  ; miss -> default
+    (check (get-value s "F1") 200)
+    (check (get-value s "F2") 200)
+    (check (get-value s "F3") 100)
+    (check (get-value s "F4") 2)                          ; 1-based position
+    (check (get-value s "F5") -1))
+
+  ;; iferror swallows an error to a default, yet still tracks the precedent so
+  ;; recovery re-fires when the cause is fixed
+  (let ((s (make-sheet)))
+    (set-cell s "B1" '(iferror (/ 1 (cell "A1")) -1))
+    (check (get-value s "B1") -1)                         ; A1 empty -> default
+    (set-cell s "A1" 5)
+    (check (get-value s "B1") 1/5)                        ; recovered, dependency live
+    ;; blankp on a nil value (an empty-cell READ errors, so pair it with iferror)
+    (set-cell s "B2" '(blankp (iferror (cell "Z9") nil)))
+    (check (get-value s "B2") t)                          ; Z9 empty -> nil -> blank
+    (set-cell s "B3" '(blankp (cell "A1")))
+    (check (get-value s "B3") nil))                       ; A1 = 5 is not blank
+
   ;; undo/redo of a formula edit, cascading to dependents
   (let ((s (make-sheet)))
     (set-cell s "A1" 1)

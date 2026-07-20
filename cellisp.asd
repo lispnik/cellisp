@@ -9,6 +9,7 @@
                (:file "sheet")
                (:file "workbook")
                (:file "eval")
+               (:file "stdlib")
                (:file "api")
                (:file "taxonomy")
                (:file "serialize")

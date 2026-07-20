@@ -130,11 +130,10 @@ range name (expands to its two stored corners) or a single cell (a 1x1 range)."
             (values (car named) (cdr named))
             (let ((r (resolve-ref top-left))) (values r r))))))
 
-(defun cells (top-left &optional bottom-right)
-  "Return a list of the values in a rectangle, row-major. Two corner designators
-span it explicitly; a single argument may be a range name (or a single cell).
-Either form may be sheet-qualified (\"Data!A1\" \"Data!A10\") to read across a
-workbook; the rectangle is taken from that one target sheet."
+(defun resolve-range (top-left bottom-right)
+  "Resolve a CELLS/GRID range spec to (values target-sheet r0 r1 c0 c1): the sheet
+to read and the inclusive row/column bounds. Handles a sheet qualifier
+(\"Data!A1\"), a range name, and the one-corner (1x1 or named-range) forms."
   (multiple-value-bind (sheet-name tl) (split-sheet-designator top-left)
     (let* ((target (if sheet-name (require-sheet sheet-name) *sheet*))
            ;; a qualified bottom-right's sheet part is redundant; use its local
@@ -144,16 +143,22 @@ workbook; the rectangle is taken from that one target sheet."
       (multiple-value-bind (a b)
           ;; resolve corners (and any range name) in the TARGET sheet's namespace
           (let ((*sheet* target)) (range-corners (if sheet-name tl top-left) br))
-        (let ((r0 (min (ref-row a) (ref-row b)))
-              (r1 (max (ref-row a) (ref-row b)))
-              (c0 (min (ref-col a) (ref-col b)))
-              (c1 (max (ref-col a) (ref-col b)))
-              (out '()))
-          (loop for r from r0 to r1 do
-            (loop for c from c0 to c1
-                  for ref = (make-ref r c)
-                  do (push (read-cell-value target ref) out)))
-          (nreverse out))))))
+        (values target
+                (min (ref-row a) (ref-row b)) (max (ref-row a) (ref-row b))
+                (min (ref-col a) (ref-col b)) (max (ref-col a) (ref-col b)))))))
+
+(defun cells (top-left &optional bottom-right)
+  "Return a list of the values in a rectangle, row-major. Two corner designators
+span it explicitly; a single argument may be a range name (or a single cell).
+Either form may be sheet-qualified (\"Data!A1\" \"Data!A10\") to read across a
+workbook; the rectangle is taken from that one target sheet."
+  (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
+    (let ((out '()))
+      (loop for r from r0 to r1 do
+        (loop for c from c0 to c1
+              for ref = (make-ref r c)
+              do (push (read-cell-value target ref) out)))
+      (nreverse out))))
 
 ;;; --- aggregates -----------------------------------------------------
 

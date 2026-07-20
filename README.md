@@ -67,6 +67,19 @@ A formula is any Lisp form. Inside it, `(cell "A1")` reads another cell and
 (set-cell s "B1" '(sum (cells "A1" "A5")))
 ```
 
+Because a formula is just Lisp, CL's own `if`, `min`, `max`, `and`, … work
+directly on explicit arguments. On top of that, a small **standard library** adds
+the spreadsheet conveniences CL lacks — aggregates that ignore blanks/text over a
+range, predicate-filtered aggregates, 2D range access, lookups, and `iferror`:
+
+```lisp
+(minimum (cells "A1" "A9"))              ; MIN ignoring text/blanks (also maximum, product, median)
+(sumif (lambda (x) (> x 100)) (cells "A1" "A9"))   ; also countif, averageif
+(grid "A1" "B9")                         ; a range as a list of rows (2D), vs. cells' flat list
+(vlookup "acme" (grid "A1" "C9") 3)      ; also lookup, hlookup, match
+(iferror (/ (cell "A1") (cell "A2")) 0)  ; a value on error; precedents still tracked
+```
+
 A sheet may carry an **environment** of named constants exposed to every
 formula:
 
