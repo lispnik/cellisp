@@ -296,6 +296,24 @@ Specs are `:general`, `:integer`, `(:fixed n)`, `(:percent n)`,
 `(:currency sym n)`, a literal string, or a function of the value. `format-value`
 and `error-token` are also exported for direct use.
 
+**Rendering to a console:** `print-sheet` / `print-workbook` dump an aligned text
+grid to a stream (default stdout) — column-letter headers, row numbers, cells via
+`display-value` (numbers right-aligned), an optional format registry applied:
+
+```lisp
+(print-workbook wb)          ; each sheet, headed by its name, to *standard-output*
+(print-sheet s :formats f)   ; one sheet, styled
+```
+
+```
+Data
+  | A  | B     | C     |
+--+----+-------+-------+
+1 | 10 | hello | #REF! |
+2 | 20 |       |       |
+3 | 30 |       |       |
+```
+
 **Conditional formatting** layers value-dependent rules on top: a predicate over
 the cell's value picks a spec that overrides the static format (first match wins,
 optionally scoped to a column):

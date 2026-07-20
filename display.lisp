@@ -13,7 +13,8 @@
   (:use #:cl #:cellisp)
   (:export #:display-value #:error-token #:format-value
            #:make-formats #:formats-p #:set-format #:set-column-format
-           #:format-for #:add-conditional #:conditional-spec))
+           #:format-for #:add-conditional #:conditional-spec
+           #:print-sheet #:print-workbook))
 
 (in-package #:cellisp/display)
 
@@ -177,3 +178,56 @@ otherwise its value formatted per FORMATS (a registry from MAKE-FORMATS) or
                   (or (conditional-spec formats designator value)
                       (format-for formats designator))
                   :general))))))
+
+;;;; --- console rendering ----------------------------------------------
+
+(defun print-sheet (sheet &key (stream *standard-output*) formats
+                            (name (sheet-name sheet)))
+  "Render SHEET to STREAM as an aligned text grid — column-letter headers, row
+numbers, cells shown via DISPLAY-VALUE (numbers right-aligned, everything else
+left). FORMATS, if given, styles the values. NAME (defaulting to the sheet's own
+name) prints a heading; NIL prints none. An empty sheet prints \"(empty)\"."
+  (when name (format stream "~&~A~%" name))
+  (multiple-value-bind (rows cols) (sheet-dimensions sheet)
+    (if (or (zerop rows) (zerop cols))
+        (format stream "  (empty)~%")
+        (let ((rowlabw (length (princ-to-string rows)))
+              (headers (loop for c below cols collect (index->col-letters c)))
+              (strs (make-array (list rows cols)))
+              (nums (make-array (list rows cols)))
+              (widths (make-array cols)))
+          ;; render every cell, tracking per-column width and numeric-ness
+          (dotimes (c cols) (setf (aref widths c) (length (nth c headers))))
+          (dotimes (r rows)
+            (dotimes (c cols)
+              (let ((str (display-value sheet (cons r c) :formats formats)))
+                (setf (aref strs r c) str
+                      (aref nums r c) (numberp (get-value sheet (cons r c)))
+                      (aref widths c) (max (aref widths c) (length str))))))
+          ;; header row + rule
+          (format stream "~v@A |" rowlabw "")
+          (dotimes (c cols) (format stream " ~vA |" (aref widths c) (nth c headers)))
+          (format stream "~%~v@A-+" rowlabw (make-string rowlabw :initial-element #\-))
+          (dotimes (c cols)
+            (format stream "~A+" (make-string (+ 2 (aref widths c))
+                                              :initial-element #\-)))
+          (terpri stream)
+          ;; data rows
+          (dotimes (r rows)
+            (format stream "~v@A |" rowlabw (1+ r))
+            (dotimes (c cols)
+              (let ((w (aref widths c)) (str (aref strs r c)))
+                (if (aref nums r c)
+                    (format stream " ~v@A |" w str)   ; right-align numbers
+                    (format stream " ~vA |" w str)))) ; left-align text/tokens
+            (terpri stream)))))
+  (values))
+
+(defun print-workbook (workbook &key (stream *standard-output*) formats)
+  "Render every sheet of WORKBOOK to STREAM (default stdout), one after another,
+each headed by its name. FORMATS, if given, styles all sheets."
+  (loop for s in (workbook-sheets workbook)
+        for first = t then nil
+        do (unless first (terpri stream))
+           (print-sheet s :stream stream :formats formats))
+  (values))

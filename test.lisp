@@ -541,6 +541,14 @@ the invariant always held."
     (check (ref-row (cdr (used-range s))) 4)             ; ref-row/-col exported
     (check (ref-col (cdr (used-range s))) 3))
 
+  ;; a referenced-empty cell makes a placeholder but doesn't extend used-range
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10)
+    (ignore-errors (set-cell s "A2" '(+ (cell "A1") (cell "Z9"))))  ; reads empty Z9
+    (check (and (cellisp::find-cell s (parse-ref "Z9")) t) t)       ; placeholder exists
+    (check (used-range s) '((0 . 0) . (1 . 0)))          ; A1:A2 — not out to Z9
+    (check (multiple-value-list (sheet-dimensions s)) '(2 1)))
+
   ;; --- multi-sheet workbooks + cross-sheet references ---------------
 
   ;; a cross-sheet reference reads another sheet and propagates on edit

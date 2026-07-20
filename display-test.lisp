@@ -204,6 +204,42 @@
     (add-conditional f #'plusp '(:fixed 1))       ; plusp of a string errors -> skip
     (check (display-value s "A1" :formats f) "text"))
 
+  ;; --- console rendering --------------------------------------------
+
+  (flet ((contains (haystack needle)
+           (and (search needle haystack) t)))
+    ;; print-sheet renders a headed, aligned grid with display strings
+    (let* ((s (make-sheet))
+           (out (progn (set-cell s "A1" 10) (set-cell s "B1" "hi")
+                       (ignore-errors (set-cell s "A2" '(/ 1 (cell "Z9"))))
+                       (with-output-to-string (o)
+                         (print-sheet s :stream o :name "Sheet1")))))
+      (check (contains out "Sheet1") t)                  ; heading
+      (check (contains out "A") t)                       ; column header
+      (check (contains out "10") t)                      ; value
+      (check (contains out "hi") t)                      ; string value
+      (check (contains out "#REF!") t))                  ; error token
+
+    ;; a referenced-empty cell doesn't balloon the grid (used-range fix)
+    (let* ((s (make-sheet))
+           (out (progn (set-cell s "A1" 1)
+                       (ignore-errors (set-cell s "A2" '(cell "Z99")))
+                       (with-output-to-string (o) (print-sheet s :stream o :name nil)))))
+      (check (contains out "Z") nil))                    ; no column out to Z
+
+    ;; an empty sheet prints "(empty)"
+    (let ((out (with-output-to-string (o) (print-sheet (make-sheet) :stream o))))
+      (check (contains out "(empty)") t))
+
+    ;; print-workbook renders each sheet under its name
+    (let* ((wb (make-workbook)) (d (add-sheet wb "Data")) (s (add-sheet wb "Sum")))
+      (set-cell d "A1" 5)
+      (set-cell s "A1" '(* (cell "Data!A1") 2))
+      (let ((out (with-output-to-string (o) (print-workbook wb :stream o))))
+        (check (contains out "Data") t)
+        (check (contains out "Sum") t)
+        (check (contains out "10") t))))
+
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Display test failures: ~D" *fails*))
   t)

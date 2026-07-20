@@ -127,18 +127,26 @@ more than once. Returns FN."
   (with-sheet-lock (sheet)
     (setf (sheet-change-hook sheet) fn)))
 
+(defun %cell-content-p (cell)
+  "True if CELL carries real content (a formula, value, or error) rather than
+being a pure dependency-placeholder created by ENSURE-CELL to hold a back-link to
+a referenced-empty cell."
+  (or (cell-formula cell) (cell-value cell) (cell-err cell)))
+
 (defun used-range (sheet)
-  "The tight bounding box of the non-empty cells as a (top-left . bottom-right)
-ref cons, or NIL when the sheet is empty. Read it with (cells (car r) (cdr r))."
+  "The tight bounding box of the cells with content as a (top-left .
+bottom-right) ref cons, or NIL when the sheet has none. Pure dependency
+-placeholder cells (an empty cell a formula merely references) are ignored, so
+the range reflects actual content. Read it with (cells (car r) (cdr r))."
   (with-sheet-lock (sheet)
     (let (minr minc maxr maxc)
       (map-cells (lambda (ref cell)
-                   (declare (ignore cell))
-                   (let ((r (ref-row ref)) (c (ref-col ref)))
-                     (when (or (null minr) (< r minr)) (setf minr r))
-                     (when (or (null maxr) (> r maxr)) (setf maxr r))
-                     (when (or (null minc) (< c minc)) (setf minc c))
-                     (when (or (null maxc) (> c maxc)) (setf maxc c))))
+                   (when (%cell-content-p cell)
+                     (let ((r (ref-row ref)) (c (ref-col ref)))
+                       (when (or (null minr) (< r minr)) (setf minr r))
+                       (when (or (null maxr) (> r maxr)) (setf maxr r))
+                       (when (or (null minc) (< c minc)) (setf minc c))
+                       (when (or (null maxc) (> c maxc)) (setf maxc c)))))
                  sheet)
       (and minr (cons (cons minr minc) (cons maxr maxc))))))
 

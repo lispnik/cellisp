@@ -9,6 +9,7 @@
    #:remove-sheet #:workbook-sheets #:workbook-names #:recompute-workbook
    ;; reference parsing
    #:ref #:parse-ref #:ref-string #:ref-row #:ref-col
+   #:index->col-letters #:col-letters->index
    ;; cell access
    #:cell-formula #:cell-value #:cell-err
    ;; mutation
