@@ -4,6 +4,7 @@
   (:export
    ;; sheet
    #:make-sheet #:sheet #:sheet-p #:sheet-name #:sheet-workbook
+   #:sheet-environment
    ;; workbook (multi-sheet)
    #:workbook #:workbook-p #:make-workbook #:add-sheet #:find-sheet
    #:remove-sheet #:workbook-sheets #:workbook-names #:recompute-workbook
@@ -47,7 +48,7 @@
    #:insert-row #:delete-row #:insert-column #:delete-column
    #:copy-cell #:fill-range #:spill
    ;; named cells and ranges
-   #:set-name #:remove-name #:name-ref #:set-range #:range-ref
+   #:set-name #:remove-name #:name-ref #:set-range #:range-ref #:map-names
    ;; cell notes / comments
    #:set-note #:cell-note #:remove-note #:map-notes
    ;; merged cells

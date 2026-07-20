@@ -221,6 +221,29 @@ cell. Forms print in the CELLISP package so operators/refs read cleanly."
           ((stringp f) f)
           (t (princ-to-string f)))))
 
+(defun %print-names (sheet stream)
+  "Print a sheet's named cells and ranges (name=A1 / name=A1:B3), if any."
+  (let ((entries '()))
+    (map-names (lambda (name val)
+                 (push (if (consp (car val))   ; a (tl . br) range value
+                           (format nil "~A=~A:~A" name
+                                   (ref-string (car val)) (ref-string (cdr val)))
+                           (format nil "~A=~A" name (ref-string val)))
+                       entries))
+               sheet)
+    (when entries
+      (format stream "  names: ~{~A~^, ~}~%" (sort entries #'string<)))))
+
+(defun %print-env (sheet stream)
+  "Print a sheet's environment constants (name=value), if any."
+  (let ((env (sheet-environment sheet)))
+    (when env
+      (format stream "  env:   ~{~A~^, ~}~%"
+              (loop for pair in env
+                    collect (if (consp pair)
+                                (format nil "~A=~A" (car pair) (cdr pair))
+                                (format nil "~A" pair)))))))
+
 (defun print-sheet (sheet &key (stream *standard-output*) formats formulas
                             (name (sheet-name sheet)))
   "Render SHEET to STREAM as an aligned text grid — column-letter headers, row
@@ -228,7 +251,8 @@ numbers, cells shown via DISPLAY-VALUE (numbers right-aligned, everything else
 left). With FORMULAS non-NIL each cell shows its formula (\"=<form>\") instead of
 its value, everything left-aligned. FORMATS, if given, styles the values. NAME
 (defaulting to the sheet's own name) prints a heading; NIL prints none. An empty
-sheet prints \"(empty)\"."
+sheet prints \"(empty)\". Below the grid, any named cells/ranges and environment
+constants the sheet carries are listed."
   (when name (format stream "~&~A~%" name))
   (multiple-value-bind (rows cols) (sheet-dimensions sheet)
     (if (or (zerop rows) (zerop cols))
@@ -267,6 +291,9 @@ sheet prints \"(empty)\"."
                     (format stream " ~v@A |" w str)   ; right-align numbers
                     (format stream " ~vA |" w str)))) ; left-align text/tokens
             (terpri stream)))))
+  ;; footer: named cells/ranges and environment constants (when present)
+  (%print-names sheet stream)
+  (%print-env sheet stream)
   (values))
 
 (defun print-workbook (workbook &key (stream *standard-output*) formats formulas)

@@ -35,12 +35,13 @@
          (summary (add-sheet wb "Summary" :environment '((tax . 21/100)))))
 
     ;; --- Sales: units x price per product, with a revenue total ---------
+    (set-range sales "revenue" "D2" "D4")         ; a named RANGE (the revenue col)
     (set-cells sales
       '(("A1" "Product") ("B1" "Units") ("C1" "Price") ("D1" "Revenue")
         ("A2" "Widget")  ("B2" 3000) ("C2" 25) ("D2" (* (cell "B2") (cell "C2")))
         ("A3" "Gadget")  ("B3" 800)  ("C3" 40) ("D3" (* (cell "B3") (cell "C3")))
         ("A4" "Gizmo")   ("B4" 1500) ("C4" 15) ("D4" (* (cell "B4") (cell "C4")))
-        ("A5" "Total")   ("D5" (sum (cells "D2" "D4")))))
+        ("A5" "Total")   ("D5" (sum (cells "revenue")))))  ; sum the named range
     (set-name  sales "total_rev" "D5")            ; referenced by name, cross-sheet
     (set-note  sales "D5" "sum of all product revenue")
     (merge-cells sales "A5" "C5")                 ; the "Total" label spans A5:C5

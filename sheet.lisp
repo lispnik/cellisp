@@ -241,6 +241,13 @@ names a single cell rather than a range."
   (with-sheet-lock (sheet)
     (gethash (%name-key name) (sheet-names sheet))))
 
+(defun map-names (fn sheet)
+  "Call FN with (name value) for every registered name on SHEET. VALUE is a ref
+for a single-cell name, or a (top-left . bottom-right) cons for a range name.
+Names are the upcased keys."
+  (with-sheet-lock (sheet)
+    (maphash fn (sheet-names sheet))))
+
 ;;; --- cell notes / comments ------------------------------------------
 
 (defun set-note (sheet designator text)

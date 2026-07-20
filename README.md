@@ -318,7 +318,12 @@ Data
 1 | 10 | hello | #REF! |
 2 | 20 |       |       |
 3 | 30 |       |       |
+  names: SUBTOTAL=A1:A3, TAXRATE=B1
+  env:   tax=1/10
 ```
+
+Below each grid it lists the sheet's **named cells/ranges** and **environment
+constants**.
 
 **Conditional formatting** layers value-dependent rules on top: a predicate over
 the cell's value picks a spec that overrides the static format (first match wins,

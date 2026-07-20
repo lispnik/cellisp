@@ -264,7 +264,18 @@
                          (print-sheet s :stream o :formulas t)))))
       (check (contains out "=(* ") t)                     ; a formula, with '='
       (check (contains out "(CELL \"A1\")") t)            ; its refs, quoted
-      (check (contains out "10") t)))                     ; a constant shown as-is
+      (check (contains out "10") t))                      ; a constant shown as-is
+
+    ;; footer lists named cells/ranges and environment constants
+    (let* ((wb (make-workbook))
+           (s (add-sheet wb "S" :environment '((tax . 1/10))))
+           (out (progn (set-cell s "A1" 1)
+                       (set-name s "price" "A1")
+                       (set-range s "blk" "A1" "B2")
+                       (with-output-to-string (o) (print-sheet s :stream o)))))
+      (check (contains out "PRICE=A1") t)                 ; a named cell
+      (check (contains out "BLK=A1:B2") t)                ; a named range
+      (check (contains out "TAX=1/10") t)))               ; an env constant
 
   ;; formula-string directly: literal, formula (one line), empty
   (let ((s (make-sheet)))
