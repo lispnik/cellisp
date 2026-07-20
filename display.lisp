@@ -14,7 +14,7 @@
   (:export #:display-value #:error-token #:format-value
            #:make-formats #:formats-p #:set-format #:set-column-format
            #:format-for #:add-conditional #:conditional-spec
-           #:print-sheet #:print-workbook))
+           #:print-sheet #:print-workbook #:formula-string))
 
 (in-package #:cellisp/display)
 
@@ -209,12 +209,26 @@ otherwise its value formatted per FORMATS (a registry from MAKE-FORMATS) or
 
 ;;;; --- console rendering ----------------------------------------------
 
-(defun print-sheet (sheet &key (stream *standard-output*) formats
+(defun formula-string (sheet designator)
+  "The cell's *formula* as a display string, spreadsheet \"show-formulas\" style:
+\"=<form>\" for a real formula, the literal for a constant, \"\" for an empty
+cell. Forms print in the CELLISP package so operators/refs read cleanly."
+  (let ((f (get-formula sheet designator)))
+    (cond ((null f) "")
+          ((consp f) (let ((*package* (find-package '#:cellisp))
+                           (*print-pretty* nil))   ; keep the form on one line
+                       (format nil "=~S" f)))
+          ((stringp f) f)
+          (t (princ-to-string f)))))
+
+(defun print-sheet (sheet &key (stream *standard-output*) formats formulas
                             (name (sheet-name sheet)))
   "Render SHEET to STREAM as an aligned text grid — column-letter headers, row
 numbers, cells shown via DISPLAY-VALUE (numbers right-aligned, everything else
-left). FORMATS, if given, styles the values. NAME (defaulting to the sheet's own
-name) prints a heading; NIL prints none. An empty sheet prints \"(empty)\"."
+left). With FORMULAS non-NIL each cell shows its formula (\"=<form>\") instead of
+its value, everything left-aligned. FORMATS, if given, styles the values. NAME
+(defaulting to the sheet's own name) prints a heading; NIL prints none. An empty
+sheet prints \"(empty)\"."
   (when name (format stream "~&~A~%" name))
   (multiple-value-bind (rows cols) (sheet-dimensions sheet)
     (if (or (zerop rows) (zerop cols))
@@ -228,9 +242,13 @@ name) prints a heading; NIL prints none. An empty sheet prints \"(empty)\"."
           (dotimes (c cols) (setf (aref widths c) (length (nth c headers))))
           (dotimes (r rows)
             (dotimes (c cols)
-              (let ((str (display-value sheet (cons r c) :formats formats)))
+              (let ((str (if formulas
+                             (formula-string sheet (cons r c))
+                             (display-value sheet (cons r c) :formats formats))))
                 (setf (aref strs r c) str
-                      (aref nums r c) (numberp (get-value sheet (cons r c)))
+                      ;; in formula view everything is text -> left-align
+                      (aref nums r c) (and (not formulas)
+                                           (numberp (get-value sheet (cons r c))))
                       (aref widths c) (max (aref widths c) (length str))))))
           ;; header row + rule
           (format stream "~v@A |" rowlabw "")
@@ -251,11 +269,12 @@ name) prints a heading; NIL prints none. An empty sheet prints \"(empty)\"."
             (terpri stream)))))
   (values))
 
-(defun print-workbook (workbook &key (stream *standard-output*) formats)
+(defun print-workbook (workbook &key (stream *standard-output*) formats formulas)
   "Render every sheet of WORKBOOK to STREAM (default stdout), one after another,
-each headed by its name. FORMATS, if given, styles all sheets."
+each headed by its name. FORMATS styles the values; FORMULAS non-NIL shows each
+cell's formula instead of its value."
   (loop for s in (workbook-sheets workbook)
         for first = t then nil
         do (unless first (terpri stream))
-           (print-sheet s :stream stream :formats formats))
+           (print-sheet s :stream stream :formats formats :formulas formulas))
   (values))

@@ -306,8 +306,9 @@ grid to a stream (default stdout) — column-letter headers, row numbers, cells 
 `display-value` (numbers right-aligned), an optional format registry applied:
 
 ```lisp
-(print-workbook wb)          ; each sheet, headed by its name, to *standard-output*
-(print-sheet s :formats f)   ; one sheet, styled
+(print-workbook wb)               ; each sheet, headed by its name, to *standard-output*
+(print-sheet s :formats f)        ; one sheet, styled
+(print-workbook wb :formulas t)   ; "show formulas" view: =<form> instead of values
 ```
 
 ```

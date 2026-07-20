@@ -254,7 +254,25 @@
       (let ((out (with-output-to-string (o) (print-workbook wb :stream o))))
         (check (contains out "Data") t)
         (check (contains out "Sum") t)
-        (check (contains out "10") t))))
+        (check (contains out "10") t)))
+
+    ;; :formulas view shows each cell's formula instead of its value
+    (let* ((s (make-sheet))
+           (out (progn (set-cell s "A1" 10)
+                       (set-cell s "A2" '(* (cell "A1") 2))
+                       (with-output-to-string (o)
+                         (print-sheet s :stream o :formulas t)))))
+      (check (contains out "=(* ") t)                     ; a formula, with '='
+      (check (contains out "(CELL \"A1\")") t)            ; its refs, quoted
+      (check (contains out "10") t)))                     ; a constant shown as-is
+
+  ;; formula-string directly: literal, formula (one line), empty
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 5)
+    (set-cell s "A2" '(+ (cell "A1") 1))
+    (check (formula-string s "A1") "5")
+    (check (formula-string s "A2") "=(+ (CELL \"A1\") 1)")
+    (check (formula-string s "Z9") ""))
 
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Display test failures: ~D" *fails*))
