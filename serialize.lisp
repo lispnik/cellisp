@@ -97,6 +97,12 @@ and closure-based config are not written."
                                       acc))
                               (sheet-names sheet))
                      acc)
+            ;; cell notes: (ref-string . "note text")
+            :notes (let ((acc '()))
+                     (maphash (lambda (ref note)
+                                (push (cons (ref-string ref) note) acc))
+                              (sheet-notes sheet))
+                     acc)
             :cells (nreverse cells)))))
 
 (defun form->sheet (form)
@@ -104,7 +110,8 @@ and closure-based config are not written."
   (unless (and (consp form) (eq (car form) :cellisp-sheet))
     (error 'sheet-error :format-control "Not a cellisp sheet form: ~S"
                         :format-arguments (list form)))
-  (destructuring-bind (&key version environment names cells &allow-other-keys)
+  (destructuring-bind (&key version environment names notes cells
+                       &allow-other-keys)
       (cdr form)
     (declare (ignore version))
     (let ((sheet (make-sheet :environment environment)))
@@ -113,6 +120,7 @@ and closure-based config are not written."
         (if (consp (cdr pair))
             (set-range sheet (car pair) (second pair) (third pair))
             (set-name sheet (car pair) (cdr pair))))
+      (dolist (pair notes) (set-note sheet (car pair) (cdr pair)))
       ;; 1. create cells and apply value-wrapping / source config FIRST, so
       ;;    they are active when the formulas recompute below.
       (dolist (pl cells)

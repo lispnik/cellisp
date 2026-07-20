@@ -66,6 +66,9 @@
   (frozen (make-hash-table :test 'equal) :type hash-table)
   ;; Named-cell aliases: upcased name string -> ref. RESOLVE-REF consults it.
   (names (make-hash-table :test 'equal) :type hash-table)
+  ;; Cell notes/comments: ref -> string. Metadata only — the engine never reads
+  ;; them; they follow their cell across structural edits and are serialized.
+  (notes (make-hash-table :test 'equal) :type hash-table)
   ;; Undo/redo of formula edits: each entry is a snapshot alist of
   ;; (ref . formula-or-:absent) — the state to restore.
   (undo-stack '() :type list)
@@ -206,3 +209,32 @@ names a single cell rather than a range."
   "The ref NAME aliases, or NIL."
   (with-sheet-lock (sheet)
     (gethash (%name-key name) (sheet-names sheet))))
+
+;;; --- cell notes / comments ------------------------------------------
+
+(defun set-note (sheet designator text)
+  "Attach a note (comment) to the cell at DESIGNATOR. TEXT is a string, or NIL /
+\"\" to remove the note. A note is metadata: it needs no cell to exist, follows
+its cell across structural edits, and is serialized. Returns TEXT."
+  (with-sheet-lock (sheet)
+    (let ((ref (parse-ref designator)))
+      (if (or (null text) (and (stringp text) (string= text "")))
+          (remhash ref (sheet-notes sheet))
+          (setf (gethash ref (sheet-notes sheet)) text)))
+    text))
+
+(defun cell-note (sheet designator)
+  "The note on the cell at DESIGNATOR, or NIL."
+  (with-sheet-lock (sheet)
+    (gethash (parse-ref designator) (sheet-notes sheet))))
+
+(defun remove-note (sheet designator)
+  "Remove any note on the cell at DESIGNATOR."
+  (with-sheet-lock (sheet)
+    (remhash (parse-ref designator) (sheet-notes sheet)))
+  (values))
+
+(defun map-notes (fn sheet)
+  "Call FN with (ref note) for every noted cell."
+  (with-sheet-lock (sheet)
+    (maphash fn (sheet-notes sheet))))

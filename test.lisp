@@ -658,6 +658,39 @@ the invariant always held."
     (check (get-value s "B2") 7)
     (check (get-value s "B3") 20))
 
+  ;; --- cell notes / comments ----------------------------------------
+
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10)
+    (set-note s "A1" "revenue")
+    (check (cell-note s "A1") "revenue")
+    (check (cell-note s "B2") nil)                        ; no note
+    (set-note s "A1" "gross revenue")                     ; overwrite
+    (check (cell-note s "A1") "gross revenue")
+    (set-note s "A1" nil)                                 ; nil removes
+    (check (cell-note s "A1") nil)
+    ;; a note needs no cell to exist
+    (set-note s "Z9" "empty but noted")
+    (check (cell-note s "Z9") "empty but noted"))
+
+  ;; a note follows its cell across a structural edit
+  (let ((s (make-sheet)))
+    (set-cell s "A2" 7)
+    (set-note s "A2" "note on A2")
+    (insert-row s 1)                                      ; A2 -> A3
+    (check (cell-note s "A3") "note on A2")
+    (check (cell-note s "A2") nil))
+
+  ;; notes round-trip through serialization
+  (let ((s1 (make-sheet)))
+    (set-cell s1 "A1" 5)
+    (set-note s1 "A1" "hello")
+    (set-note s1 "C3" "standalone note")
+    (let* ((text (with-output-to-string (o) (write-sheet s1 o)))
+           (s2 (with-input-from-string (i text) (read-sheet i))))
+      (check (cell-note s2 "A1") "hello")
+      (check (cell-note s2 "C3") "standalone note")))
+
   ;; --- atomic transactions ------------------------------------------
 
   ;; a transaction commits its edits in a single recompute sweep

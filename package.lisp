@@ -47,6 +47,8 @@
    #:copy-cell #:fill-range #:spill
    ;; named cells and ranges
    #:set-name #:remove-name #:name-ref #:set-range #:range-ref
+   ;; cell notes / comments
+   #:set-note #:cell-note #:remove-note #:map-notes
    ;; introspection
    #:dependents #:precedents #:map-cells #:volatile-refs
    #:used-range #:sheet-dimensions #:set-change-hook

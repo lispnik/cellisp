@@ -113,7 +113,9 @@ values via RECALC-ALL."
             (sheet-volatiles sheet) (shift-registry (sheet-volatiles sheet) shift-fn)
             (sheet-frozen sheet)    (shift-registry (sheet-frozen sheet) shift-fn)
             ;; named aliases follow their target cell (dropped if it's deleted)
-            (sheet-names sheet)     (shift-name-table (sheet-names sheet) shift-fn))
+            (sheet-names sheet)     (shift-name-table (sheet-names sheet) shift-fn)
+            ;; notes follow their cell too (dropped if it's deleted)
+            (sheet-notes sheet)     (shift-registry (sheet-notes sheet) shift-fn))
       (recalc-all sheet)))
   (values))
 
