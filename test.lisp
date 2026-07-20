@@ -609,6 +609,55 @@ the invariant always held."
     (set-cell s "B3" '(blankp (cell "A1")))
     (check (get-value s "B3") nil))                       ; A1 = 5 is not blank
 
+  ;; safe-cells tolerates empty AND errored cells in a range
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10) (set-cell s "A5" 40)             ; A2..A4 empty
+    (ignore-errors (set-cell s "A3" '(/ 1 (cell "Z9"))))  ; A3 errors
+    (set-cell s "B1" '(sum (safe-cells "A1" "A5")))
+    (check (get-value s "B1") 50)                         ; 10 + 40, gaps/error skipped
+    (set-cell s "A2" 100)                                 ; filling a gap re-fires
+    (check (get-value s "B1") 150))                       ; dependency was tracked
+
+  ;; sort / filter / unique helpers (usable with spill)
+  (let ((s (make-sheet)))
+    (set-cell s "A1" '(sortv (list 3 1 2)))
+    (set-cell s "A2" '(sortv (list "b" "a" "c")))         ; strings via generic order
+    (set-cell s "A3" '(filterv #'evenp (list 1 2 3 4 5 6)))
+    (set-cell s "A4" '(uniquev (list 1 1 2 3 3 3)))
+    (check (get-value s "A1") '(1 2 3))
+    (check (get-value s "A2") '("a" "b" "c"))
+    (check (get-value s "A3") '(2 4 6))
+    (check (get-value s "A4") '(1 2 3)))
+
+  ;; text helpers
+  (let ((s (make-sheet)))
+    (set-cell s "A1" '(concat "a" 1 "b"))
+    (set-cell s "A2" '(left "hello" 3))
+    (set-cell s "A3" '(right "hello" 2))
+    (set-cell s "A4" '(mid "hello" 2 3))
+    (set-cell s "A5" '(upper "abc"))
+    (set-cell s "A6" '(trim "  hi  "))
+    (set-cell s "A7" '(substitute-text "a-b-c" "-" "+"))
+    (set-cell s "A8" '(text-length "hello"))
+    (check (get-value s "A1") "a1b")
+    (check (get-value s "A2") "hel")
+    (check (get-value s "A3") "lo")
+    (check (get-value s "A4") "ell")
+    (check (get-value s "A5") "ABC")
+    (check (get-value s "A6") "hi")
+    (check (get-value s "A7") "a+b+c")
+    (check (get-value s "A8") 5))
+
+  ;; date helpers (universal-time integers)
+  (let ((s (make-sheet)))
+    (set-cell s "A1" '(date 2026 7 20))
+    (set-cell s "B1" '(year (cell "A1")))
+    (set-cell s "B2" '(month (cell "A1")))
+    (set-cell s "B3" '(day (cell "A1")))
+    (check (get-value s "B1") 2026)
+    (check (get-value s "B2") 7)
+    (check (get-value s "B3") 20))
+
   ;; --- atomic transactions ------------------------------------------
 
   ;; a transaction commits its edits in a single recompute sweep

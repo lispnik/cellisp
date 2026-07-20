@@ -59,6 +59,10 @@
    #:cell #:cells #:sum #:average #:cnt
    ;; formula standard library (stdlib.lisp)
    #:minimum #:maximum #:product #:median
-   #:countif #:sumif #:averageif
+   #:countif #:sumif #:averageif #:safe-cells
    #:grid #:match #:lookup #:vlookup #:hlookup
+   #:sortv #:filterv #:uniquev #:generic-lessp
+   #:concat #:as-text #:text-length #:left #:right #:mid
+   #:upper #:lower #:trim #:substitute-text
+   #:date #:year #:month #:day #:weekday #:now
    #:blankp #:iferror))
