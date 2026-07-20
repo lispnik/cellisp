@@ -145,6 +145,32 @@
     (check (display-value s "B1" :formats f) "50%")
     (check (display-value s "B1") "0.5"))         ; no registry -> general
 
+  ;; --- conditional formatting ---------------------------------------
+
+  ;; a rule overrides the static format for matching values; first match wins
+  (let ((s (make-sheet)) (f (make-formats)))
+    (set-cell s "A1" -5)
+    (set-cell s "A2" 5)
+    (set-format f "A1" '(:fixed 2))               ; static format for A1
+    (set-format f "A2" '(:fixed 2))
+    ;; negatives render via a function spec (parenthesized); overrides :fixed
+    (add-conditional f #'minusp (lambda (v) (format nil "(~A)" (abs v))))
+    (check (display-value s "A1" :formats f) "(5)")   ; rule matched, overrode
+    (check (display-value s "A2" :formats f) "5.00")) ; no match -> static :fixed
+
+  ;; a column-scoped rule only fires in its column
+  (let ((s (make-sheet)) (f (make-formats)))
+    (set-cell s "B1" 0) (set-cell s "C1" 0)
+    (add-conditional f #'zerop "—" :column "B")   ; blank-out zeros, column B only
+    (check (display-value s "B1" :formats f) "—")
+    (check (display-value s "C1" :formats f) "0"))  ; column C untouched
+
+  ;; a rule that errors on a value simply doesn't match (defensive)
+  (let ((s (make-sheet)) (f (make-formats)))
+    (set-cell s "A1" "text")
+    (add-conditional f #'plusp '(:fixed 1))       ; plusp of a string errors -> skip
+    (check (display-value s "A1" :formats f) "text"))
+
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Display test failures: ~D" *fails*))
   t)

@@ -13,7 +13,7 @@
   (:use #:cl #:cellisp)
   (:export #:display-value #:error-token #:format-value
            #:make-formats #:formats-p #:set-format #:set-column-format
-           #:format-for))
+           #:format-for #:add-conditional #:conditional-spec))
 
 (in-package #:cellisp/display)
 
@@ -91,9 +91,11 @@ trailing dot (\"25\" not \"25.\")."
   "Render VALUE (a cell's computed value) as a display string. Handles the value
 kinds cells hold: integers, ratios, floats, strings, NIL (empty -> \"\"), and the
 lists produced by CELLS (elements joined by \", \"). A non-number handed a numeric
-SPEC falls back to :GENERAL. A function SPEC is called with VALUE."
+SPEC falls back to :GENERAL. A function SPEC is called with VALUE; a string SPEC
+is returned verbatim (a literal replacement, handy for conditional rules)."
   (cond
     ((functionp spec) (princ-to-string (funcall spec value)))
+    ((stringp spec) spec)               ; a literal-string spec replaces the value
     ((null value) "")
     ((stringp value) value)
     ((numberp value) (%number-string value spec))
@@ -106,7 +108,9 @@ SPEC falls back to :GENERAL. A function SPEC is called with VALUE."
 (defstruct (formats (:constructor %make-formats))
   ;; parse-ref key -> spec, and column-index -> spec (a column default).
   (cells (make-hash-table :test 'equal) :type hash-table)
-  (columns (make-hash-table :test 'eql) :type hash-table))
+  (columns (make-hash-table :test 'eql) :type hash-table)
+  ;; conditional-format rules, in order: each (predicate spec column-or-nil).
+  (rules '() :type list))
 
 (defun make-formats () "An empty format registry." (%make-formats))
 
@@ -124,12 +128,38 @@ Returns SPEC."
     (setf (gethash col (formats-columns formats)) spec)))
 
 (defun format-for (formats designator)
-  "The effective SPEC for DESIGNATOR: a cell-specific format wins over a column
-default, which wins over :GENERAL."
+  "The effective *static* SPEC for DESIGNATOR: a cell-specific format wins over a
+column default, which wins over :GENERAL. (Conditional rules are applied
+separately, by DISPLAY-VALUE, since they depend on the cell's value.)"
   (let ((ref (parse-ref designator)))
     (or (gethash ref (formats-cells formats))
         (gethash (ref-col ref) (formats-columns formats))
         :general)))
+
+(defun %column-index (column)
+  (if (integerp column) column
+      (ref-col (parse-ref (format nil "~A1" column)))))
+
+(defun add-conditional (formats predicate spec &key column)
+  "Add a conditional-format rule: a cell whose *value* satisfies PREDICATE renders
+with SPEC instead of its static format. SPEC is any FORMAT-VALUE spec, including a
+function of the value — e.g. wrap negatives in parentheses, or map a status to a
+glyph. COLUMN (an index or letter) scopes the rule to one column; omit it for the
+whole sheet. Rules are tried in order and the first match wins. Returns FORMATS."
+  (setf (formats-rules formats)
+        (append (formats-rules formats)
+                (list (list predicate spec (and column (%column-index column))))))
+  formats)
+
+(defun conditional-spec (formats designator value)
+  "The SPEC of the first conditional rule matching VALUE at DESIGNATOR, or NIL.
+PREDICATE is applied defensively, so a rule that errors on a value just doesn't
+match."
+  (let ((col (ref-col (parse-ref designator))))
+    (loop for (predicate spec rule-col) in (formats-rules formats)
+          when (and (or (null rule-col) (= rule-col col))
+                    (ignore-errors (funcall predicate value)))
+            do (return spec))))
 
 ;;;; --- top level ------------------------------------------------------
 
@@ -140,6 +170,10 @@ otherwise its value formatted per FORMATS (a registry from MAKE-FORMATS) or
   (multiple-value-bind (value error) (get-value sheet designator)
     (cond (error (error-token error))
           ((null value) "")
-          (t (format-value value (if formats
-                                     (format-for formats designator)
-                                     :general))))))
+          (t (format-value
+              value
+              (if formats
+                  ;; a matching conditional rule overrides the static format
+                  (or (conditional-spec formats designator value)
+                      (format-for formats designator))
+                  :general))))))
