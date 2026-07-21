@@ -178,11 +178,16 @@ An async cell has two modes. By default the fetcher owns its own concurrency (a
 thread, an event loop, …) and calls the deliver callback. Or opt into an
 **engine-owned thread pool** — `(set-async s "A1" #'blocking-fetch :pool t)` —
 where the fetcher is a plain blocking thunk the engine runs on a bounded pool,
-delivering its result (or error) for you and owning the thread lifecycle
-(`make-async-pool` / `shutdown-async-pool`). Either way, `cancel-async` drops an
-in-flight fetch (a late result is discarded — "last refresh wins"), and
-`async-status` / `async-pending-p` report state (`:idle` / `:pending` / `:ok` /
-`:error`) for a UI.
+delivering its result (or error) for you and owning the thread lifecycle. `:pool
+t` uses the sheet's **workbook pool** (or a shared default for a standalone
+sheet); **`close-workbook`** shuts a workbook's pool down at teardown
+(`make-async-pool` / `shutdown-async-pool` for an explicit pool).
+
+`cancel-async` drops an in-flight fetch (a late result is discarded — "last
+refresh wins"). To also abort the *actual work* — not just discard its result —
+add `:cancelable t`, and the fetcher receives a `cancelled-p` predicate it can
+poll to bail early. `async-status` / `async-pending-p` report state (`:idle` /
+`:pending` / `:ok` / `:error`) for a UI.
 
 ### Behavior mixins
 

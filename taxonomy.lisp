@@ -43,7 +43,10 @@ a plain no-arg blocking thunk the engine runs on a worker and delivers for you."
    (epoch :initform 0 :accessor async-epoch)
    ;; NIL = manual (fetcher owns its thread); an ASYNC-POOL = the engine runs the
    ;; blocking fetcher on that pool and owns the thread lifecycle.
-   (pool :initform nil :accessor async-pool))
+   (pool :initform nil :accessor async-pool)
+   ;; When T, REFRESH-ASYNC passes the fetcher a trailing CANCELLED-P predicate it
+   ;; can poll to abort the actual work early (not just have its result dropped).
+   (cancelable :initform nil :accessor async-cancelable))
   (:documentation "A cell whose value arrives out-of-band. COMPUTE-VALUE returns
 the last delivered value without blocking; REFRESH-ASYNC triggers the fetcher,
 DELIVER-ASYNC / DELIVER-ERROR-ASYNC store the result, CANCEL-ASYNC drops an
@@ -473,6 +476,22 @@ Returns the freshly computed value."
 (defun default-async-pool ()
   (or *default-async-pool* (setf *default-async-pool* (make-async-pool))))
 
+(defun workbook-async-pool (workbook)
+  "WORKBOOK's engine-owned async pool, created on first use. Pooled async cells on
+its sheets use it; CLOSE-WORKBOOK shuts it down."
+  (or (workbook-pool workbook)
+      (setf (workbook-pool workbook) (make-async-pool))))
+
+(defun close-workbook (workbook)
+  "Release engine-owned resources held by WORKBOOK — currently its async thread
+pool (created for pooled async cells). Call at teardown; idempotent. Standalone
+sheets (no workbook) use the shared pool instead — close that with
+SHUTDOWN-ASYNC-POOL."
+  (when (workbook-pool workbook)
+    (shutdown-async-pool (workbook-pool workbook))
+    (setf (workbook-pool workbook) nil))
+  (values))
+
 (defun %pool-submit (pool task)
   (bt:with-lock-held ((async-pool-lock pool))
     (setf (async-pool-queue pool) (nconc (async-pool-queue pool) (list task))))
@@ -493,7 +512,7 @@ linger. No-op if POOL is NIL."
 
 ;;; --- async drivers --------------------------------------------------
 
-(defun set-async (sheet designator fetcher &key initial pool)
+(defun set-async (sheet designator fetcher &key initial pool cancelable)
   "Install (or convert the cell at) DESIGNATOR as an ASYNC-CELL with FETCHER and
 INITIAL value, preserving any mixins. Returns the initial value.
 
@@ -501,9 +520,14 @@ Without :POOL, FETCHER is the *manual* form — a function of one arg (a DELIVER
 callback) that starts its own work (a thread, an event loop, …) and eventually
 calls it; the fetcher owns that concurrency. With :POOL non-NIL, FETCHER is a
 plain no-arg *blocking thunk*: REFRESH-ASYNC runs it on an engine-owned thread
-pool (T = the shared default pool, or a pool from MAKE-ASYNC-POOL) and delivers
-its return value, or its error via DELIVER-ERROR-ASYNC. In pooled mode the engine
-owns the worker threads — bounded and reusable, cleaned up by SHUTDOWN-ASYNC-POOL."
+pool and delivers its return value, or its error via DELIVER-ERROR-ASYNC — the
+engine owns those worker threads. :POOL T uses the sheet's workbook pool (or the
+shared default pool for a standalone sheet); or pass a pool from MAKE-ASYNC-POOL.
+
+With :CANCELABLE T, REFRESH-ASYNC passes the fetcher a trailing CANCELLED-P
+predicate (so manual fetchers are 2-arg `(deliver cancelled-p)`, pooled fetchers
+1-arg `(cancelled-p)`); the fetcher polls it to abort the *actual work* early,
+not merely have its result dropped."
   (with-sheet-lock (sheet)
     (let* ((ref (resolve-ref-in sheet designator))
            (cell (ensure-cell sheet ref)))
@@ -511,8 +535,12 @@ owns the worker threads — bounded and reusable, cleaned up by SHUTDOWN-ASYNC-P
       (morph-cell cell 'async-cell (cell-mixins cell))
       (setf (async-fetcher cell) fetcher
             (async-pending cell) nil
+            (async-cancelable cell) cancelable
             (async-pool cell) (cond ((null pool) nil)
-                                    ((eq pool t) (default-async-pool))
+                                    ((eq pool t)
+                                     (if (sheet-workbook sheet)
+                                         (workbook-async-pool (sheet-workbook sheet))
+                                         (default-async-pool)))
                                     (t pool))
             (cell-value cell) initial
             (cell-err cell) nil)
@@ -522,24 +550,34 @@ owns the worker threads — bounded and reusable, cleaned up by SHUTDOWN-ASYNC-P
 (defun refresh-async (sheet designator)
   "Trigger the async cell's fetcher, superseding any in-flight fetch (its late
 result is dropped — last refresh wins). Bumps the cell's epoch and gates the
-delivery on it. In manual mode it hands the fetcher an epoch-gated DELIVER
-callback; in pooled mode it submits the blocking thunk to the pool and delivers
-its result or error for you."
+delivery on it. Manual mode hands the fetcher an epoch-gated DELIVER callback;
+pooled mode submits the blocking thunk to the pool and delivers its result/error.
+A :CANCELABLE cell's fetcher also gets a CANCELLED-P predicate (true once the
+fetch is cancelled or superseded) to abort its own work."
   (with-sheet-lock (sheet)
     (let* ((ref (resolve-ref-in sheet designator))
            (cell (find-cell sheet ref)))
       (when (typep cell 'async-cell)
-        (let ((epoch (incf (async-epoch cell)))
-              (pool (async-pool cell))
-              (fetcher (async-fetcher cell)))
+        (let* ((epoch (incf (async-epoch cell)))
+               (pool (async-pool cell))
+               (fetcher (async-fetcher cell))
+               (cancelable (async-cancelable cell))
+               ;; true once this fetch is superseded/cancelled (epoch moved on)
+               (cancelled-p (lambda () (/= epoch (async-epoch cell))))
+               (deliver (lambda (value) (deliver-async sheet ref value epoch))))
           (setf (async-pending cell) t)
           (if pool
               (%pool-submit pool
                 (lambda ()
-                  (handler-case (deliver-async sheet ref (funcall fetcher) epoch)
+                  (handler-case
+                      (deliver-async sheet ref
+                                     (if cancelable (funcall fetcher cancelled-p)
+                                         (funcall fetcher))
+                                     epoch)
                     (error (e) (deliver-error-async sheet ref e epoch)))))
-              (funcall fetcher
-                       (lambda (value) (deliver-async sheet ref value epoch))))))))
+              (if cancelable
+                  (funcall fetcher deliver cancelled-p)
+                  (funcall fetcher deliver)))))))
   (values))
 
 (defun cancel-async (sheet designator)

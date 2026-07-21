@@ -17,7 +17,10 @@
 (defstruct (workbook (:constructor %make-workbook))
   ;; Ordered alist of (upcased-name-key . sheet), insertion order preserved so
   ;; WORKBOOK-SHEETS / serialization are deterministic.
-  (entries '() :type list))
+  (entries '() :type list)
+  ;; An engine-owned async thread pool, created on demand for this workbook's
+  ;; pooled async cells (SET-ASYNC :POOL T) and shut down by CLOSE-WORKBOOK.
+  (pool nil))
 
 (defun make-workbook ()
   "Create an empty workbook. Add sheets to it with ADD-SHEET."

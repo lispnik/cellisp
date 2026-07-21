@@ -1197,6 +1197,50 @@ the invariant always held."
       (check (async-status s "B1") :error))  ; a failing pooled thunk -> :error
     (shutdown-async-pool pool))           ; joins the engine-owned workers
 
+  ;; :cancelable — the fetcher gets a CANCELLED-P predicate (manual, deterministic)
+  (let ((s (make-sheet)) (cps '()))
+    (set-async s "A1"
+               (lambda (deliver cancelled-p)
+                 (declare (ignore deliver)) (push cancelled-p cps))
+               :initial 0 :cancelable t)
+    (refresh-async s "A1")                        ; cps = (cp1)
+    (let ((cp1 (first cps)))
+      (check (funcall cp1) nil)                   ; not cancelled yet
+      (refresh-async s "A1")                      ; supersede -> new epoch
+      (check (funcall cp1) t)                     ; old fetch's predicate flips
+      (let ((cp2 (first cps)))
+        (check (funcall cp2) nil)                 ; the current fetch is live
+        (cancel-async s "A1")
+        (check (funcall cp2) t))))                ; cancel flips it too
+
+  ;; :cancelable pooled — the fetcher polls CANCELLED-P and aborts the real work
+  (let ((s (make-sheet)) (pool (make-async-pool :size 1)) (aborted nil))
+    (set-async s "A1"
+               (lambda (cancelled-p)
+                 (dotimes (i 200)
+                   (when (funcall cancelled-p) (setf aborted t) (return))
+                   (sleep 0.005))
+                 "done")
+               :initial "init" :pool pool :cancelable t)
+    (refresh-async s "A1")
+    (sleep 0.02)                                  ; let the worker start looping
+    (cancel-async s "A1")
+    (loop while (async-pending-p s "A1") repeat 200 do (sleep 0.005))
+    (sleep 0.03)
+    (check aborted t)                             ; the work stopped early
+    (check (get-value s "A1") "init")             ; and never delivered "done"
+    (shutdown-async-pool pool))
+
+  ;; a workbook owns its async pool; close-workbook disposes it
+  (let* ((wb (make-workbook)) (s (add-sheet wb "S")))
+    (set-async s "A1" (lambda () 5) :initial 0 :pool t)   ; :pool t -> workbook pool
+    (refresh-async s "A1")
+    (loop while (async-pending-p s "A1") repeat 200 do (sleep 0.005))
+    (check (get-value s "A1") 5)
+    (check (and (cellisp::workbook-pool wb) t) t)         ; workbook created a pool
+    (close-workbook wb)
+    (check (cellisp::workbook-pool wb) nil))              ; and disposed it
+
   ;; observed cell: subscribers fire after a sweep only when the value changed
   (let* ((s (make-sheet)) (log '())
          (cb (lambda (v) (push v log))))

@@ -98,12 +98,13 @@ They compose because `cached`/`ttl-cached`/`retry`/`timed` each hook
 
 ### `async-pool.lisp` — engine-owned async pool + cancellation
 
-Shows the opt-in async thread pool and cooperative cancellation: `(set-async …
-:pool p)` runs a plain blocking fetcher on an engine-owned bounded pool (which
-delivers its result or error and owns the thread lifecycle), `cancel-async` drops
-an in-flight fetch's result, `async-status`/`async-pending-p` report state, and
-`shutdown-async-pool` joins the workers. Self-contained (a stub thunk, no
-network).
+Shows the opt-in async thread pool, cancellation, and disposal: `(set-async …
+:pool t)` runs a plain blocking fetcher on the **workbook's** engine-owned pool;
+`cancel-async` drops an in-flight fetch's result; `:cancelable t` lets the fetcher
+poll a `cancelled-p` predicate to **abort the real work** early (the demo stops a
+loop after a few iterations, not 1000); `async-status`/`async-pending-p` report
+state; and `close-workbook` joins the workbook's worker threads at teardown.
+Self-contained (a stub thunk, no network).
 
 ```bash
 sbcl --script examples/async-pool.lisp
