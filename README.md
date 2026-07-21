@@ -87,6 +87,7 @@ propagate.) `safe-cells` goes further and skips *errored* cells too.
 (concat (cell "A1") " " (cell "B1"))     ; text: left, right, mid, upper, lower, trim, substitute-text
 (year (date 2026 7 20))                  ; dates as universal-time: date, year, month, day, weekday, now
 (to-number (cell "A1") 0)                ; coerce numeric text -> number, else a default
+(to-number "1.234,56" nil :decimal #\, :group #\.)   ; => 1234.56  (locale stated, never guessed)
 (iferror (/ (cell "A1") (cell "A2")) 0)  ; a value on error; precedents still tracked
 ```
 

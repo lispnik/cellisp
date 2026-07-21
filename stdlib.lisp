@@ -167,17 +167,44 @@ are still recorded as precedents, so recovery re-triggers when they change."
   "X coerced to a string: strings verbatim, NIL to \"\", anything else printed."
   (cond ((null x) "") ((stringp x) x) (t (princ-to-string x))))
 
-(defun to-number (x &optional default)
+(defun %normalize-number-text (s decimal group)
+  "Rewrite S into CL number syntax under a caller-stated convention: remove the
+GROUP separator(s), then map the DECIMAL separator to '.'. Order matters —
+grouping is removed *before* the decimal is swapped, so e.g. \"1.234,56\" with
+decimal #\\, group #\\. becomes \"1234.56\" and not \"123456\". GROUP may be a
+char or a list of chars (e.g. space and no-break space); NIL means no grouping."
+  (let ((groups (if (listp group) group (and group (list group)))))
+    (if (and (char= decimal #\.) (null groups))
+        s                                     ; strict default: nothing to rewrite
+        (with-output-to-string (out)
+          (loop for c across s do
+            (cond ((member c groups))              ; drop a grouping separator
+                  ((char= c decimal) (write-char #\. out))  ; map decimal -> '.'
+                  (t (write-char c out))))))))
+
+(defun to-number (x &optional default &key (decimal #\.) group)
   "Coerce X to a number: a number is returned as-is; a string that parses
 *entirely* as a number (integer, ratio, float, or exponent) becomes that number;
 anything else — non-numeric text, NIL, a partial match like \"3 apples\" — returns
 DEFAULT (NIL). Reads with *READ-EVAL* off and only accepts a number, so it never
-evaluates or interns a symbol. Handy for cleaning imported/text data, e.g.
-(to-number (cell \"A1\") 0)."
+evaluates or interns a symbol.
+
+Numbers written in another locale are parsed by stating the convention — never by
+guessing it. :DECIMAL (default #\\.) is the decimal separator and :GROUP (a char,
+a list of chars, or NIL) the thousands separator; the group chars are removed and
+the decimal is mapped to '.' before parsing. (DEFAULT is a positional argument, so
+pass it — NIL if you have none — before any keywords.)
+
+  (to-number \"1,234.56\" nil :group #\\,)                 ; US  => 1234.56
+  (to-number \"1.234,56\" nil :decimal #\\, :group #\\.)    ; DE  => 1234.56
+  (to-number \"1,5\"      nil :decimal #\\,)               ; DE  => 1.5   (not 15)
+
+Handy for cleaning imported/text data, e.g. (to-number (cell \"A1\") 0)."
   (cond
     ((numberp x) x)
     ((stringp x)
-     (let ((s (string-trim '(#\Space #\Tab #\Return #\Newline) x)))
+     (let ((s (%normalize-number-text
+               (string-trim '(#\Space #\Tab #\Return #\Newline) x) decimal group)))
        (if (and (plusp (length s))
                 (let ((c (char s 0)))       ; only bother for number-shaped text
                   (or (digit-char-p c) (member c '(#\- #\+ #\.)))))

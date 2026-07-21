@@ -479,6 +479,16 @@ the invariant always held."
   (check (to-number "abc" 0) 0)                          ; default
   (check (to-number "") nil)
   (check (to-number nil) nil)
+  ;; locale-aware: the caller states :decimal / :group (never guessed).
+  ;; DEFAULT is positional, so pass it (nil) before the keywords.
+  (check (to-number "1,234.56" nil :group #\,) 1234.56)              ; US grouping
+  (check (to-number "1.234,56" nil :decimal #\, :group #\.) 1234.56) ; DE (swapped)
+  (check (to-number "1'234.56" nil :group #\') 1234.56)             ; CH apostrophe
+  (check (to-number "1 234,56" nil :decimal #\, :group '(#\Space)) 1234.56) ; FR space
+  (check (to-number "1,5" nil :decimal #\,) 1.5)                    ; comma is decimal, not group
+  (check (to-number "1,234" nil :group #\,) 1234)
+  (check (to-number "1,2,3" nil :decimal #\,) nil)                  ; two decimals -> not a number
+  (check (to-number "abc" 0 :group #\,) 0)                          ; still non-numeric -> default
 
   ;; named cells: a name aliases a ref and resolves in formulas
   (let ((s (make-sheet)))
