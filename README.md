@@ -171,7 +171,18 @@ Beyond formula cells, a cell's *value source* can be:
 - **external** — produced by a Lisp thunk instead of a formula
   (`set-external s "A1" (lambda () (read-sensor)))`;
 - **async** — non-blocking; a value is pushed in out-of-band with
-  `deliver-async` and the dependents recompute when it arrives.
+  `deliver-async` (or a failure with `deliver-error-async`) and the dependents
+  recompute when it arrives.
+
+An async cell has two modes. By default the fetcher owns its own concurrency (a
+thread, an event loop, …) and calls the deliver callback. Or opt into an
+**engine-owned thread pool** — `(set-async s "A1" #'blocking-fetch :pool t)` —
+where the fetcher is a plain blocking thunk the engine runs on a bounded pool,
+delivering its result (or error) for you and owning the thread lifecycle
+(`make-async-pool` / `shutdown-async-pool`). Either way, `cancel-async` drops an
+in-flight fetch (a late result is discarded — "last refresh wins"), and
+`async-status` / `async-pending-p` report state (`:idle` / `:pending` / `:ok` /
+`:error`) for a UI.
 
 ### Behavior mixins
 

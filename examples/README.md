@@ -95,3 +95,16 @@ sbcl --script examples/cache-layers.lisp
 
 They compose because `cached`/`ttl-cached`/`retry`/`timed` each hook
 `compute-value` with an `:around` method, and `combined-class` stacks them.
+
+### `async-pool.lisp` — engine-owned async pool + cancellation
+
+Shows the opt-in async thread pool and cooperative cancellation: `(set-async …
+:pool p)` runs a plain blocking fetcher on an engine-owned bounded pool (which
+delivers its result or error and owns the thread lifecycle), `cancel-async` drops
+an in-flight fetch's result, `async-status`/`async-pending-p` report state, and
+`shutdown-async-pool` joins the workers. Self-contained (a stub thunk, no
+network).
+
+```bash
+sbcl --script examples/async-pool.lisp
+```

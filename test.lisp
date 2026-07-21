@@ -1144,6 +1144,59 @@ the invariant always held."
     (check (get-value s "B1") 7)
     (check (get-value s "B2") 70))
 
+  ;; cancel-async drops a late delivery (epoch gate); manual mode, deterministic
+  (let ((s (make-sheet)) (cap nil))
+    (set-async s "A1" (lambda (deliver) (setf cap deliver)) :initial 0)
+    (refresh-async s "A1")
+    (check (async-pending-p s "A1") t)
+    (cancel-async s "A1")
+    (check (async-pending-p s "A1") nil)  ; pending cleared -> a new fetch could start
+    (funcall cap 999)                     ; the cancelled fetch's result arrives late
+    (check (get-value s "A1") 0))         ; dropped
+
+  ;; refresh supersedes an in-flight fetch: the older delivery is dropped
+  (let ((s (make-sheet)) (d1 nil) (d2 nil))
+    (set-async s "A1" (lambda (d) (if d1 (setf d2 d) (setf d1 d))) :initial 0)
+    (refresh-async s "A1")                ; d1 = epoch 1's deliver
+    (refresh-async s "A1")                ; d2 = epoch 2's deliver (supersedes)
+    (funcall d1 111)                      ; stale -> dropped
+    (check (get-value s "A1") 0)
+    (funcall d2 222)                      ; current -> applied
+    (check (get-value s "A1") 222))
+
+  ;; deliver-error-async + async-status: a failed fetch stores an error
+  (let ((s (make-sheet)))
+    (set-async s "A1" (lambda (d) (declare (ignore d))) :initial nil)
+    (check (async-status s "A1") :idle)   ; initial nil, no fetch
+    (refresh-async s "A1")
+    (check (async-status s "A1") :pending)
+    (deliver-error-async s "A1" "network down")
+    (check (async-status s "A1") :error)
+    (check (and (nth-value 1 (get-value s "A1")) t) t)   ; cell holds an error
+    (deliver-async s "A1" 7)              ; a later success recovers it
+    (check (async-status s "A1") :ok)
+    (check (get-value s "A1") 7))
+
+  ;; pooled async: the engine runs a blocking thunk on its own pool and delivers
+  (let ((s (make-sheet)) (pool (make-async-pool :size 2)))
+    (flet ((settle (ref)
+             (loop with end = (+ (get-internal-real-time)
+                                 (* 3 internal-time-units-per-second))
+                   while (and (async-pending-p s ref)
+                              (< (get-internal-real-time) end))
+                   do (sleep 0.005))))
+      (set-async s "A1" (lambda () 42) :initial 0 :pool pool)
+      (set-cell s "A2" '(+ 1 (cell "A1")))
+      (refresh-async s "A1")
+      (settle "A1")
+      (check (get-value s "A1") 42)
+      (check (get-value s "A2") 43)       ; dependent recomputed cross-thread
+      (set-async s "B1" (lambda () (error "boom")) :initial nil :pool pool)
+      (refresh-async s "B1")
+      (settle "B1")
+      (check (async-status s "B1") :error))  ; a failing pooled thunk -> :error
+    (shutdown-async-pool pool))           ; joins the engine-owned workers
+
   ;; observed cell: subscribers fire after a sweep only when the value changed
   (let* ((s (make-sheet)) (log '())
          (cb (lambda (v) (push v log))))

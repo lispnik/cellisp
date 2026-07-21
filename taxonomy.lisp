@@ -34,12 +34,20 @@ system value. It reads no other cells, so it has no precedents."))
 
 (defclass async-cell (cell)
   ((fetcher :initform nil :initarg :fetcher :accessor async-fetcher
-            :documentation "Function of one arg (a DELIVER callback) that
-starts a fetch and eventually calls the callback with the value.")
-   (pending :initform nil :accessor async-pending))
-  (:documentation "A cell whose value arrives out-of-band. COMPUTE-VALUE
-returns the last delivered value without blocking; REFRESH-ASYNC triggers the
-fetcher, and DELIVER-ASYNC stores the value and recomputes dependents."))
+            :documentation "In manual mode, a function of one arg (a DELIVER
+callback) that starts a fetch and eventually calls it. In pooled mode (POOL set),
+a plain no-arg blocking thunk the engine runs on a worker and delivers for you.")
+   (pending :initform nil :accessor async-pending)
+   ;; monotonically-increasing token: each REFRESH-ASYNC bumps it and gates the
+   ;; delivery on it, so a cancelled or superseded fetch's late result is dropped.
+   (epoch :initform 0 :accessor async-epoch)
+   ;; NIL = manual (fetcher owns its thread); an ASYNC-POOL = the engine runs the
+   ;; blocking fetcher on that pool and owns the thread lifecycle.
+   (pool :initform nil :accessor async-pool))
+  (:documentation "A cell whose value arrives out-of-band. COMPUTE-VALUE returns
+the last delivered value without blocking; REFRESH-ASYNC triggers the fetcher,
+DELIVER-ASYNC / DELIVER-ERROR-ASYNC store the result, CANCEL-ASYNC drops an
+in-flight one."))
 
 (defmethod compute-value ((cell async-cell) sheet ref)
   (declare (ignore sheet ref))
@@ -427,9 +435,75 @@ Returns the freshly computed value."
       (recompute-closure sheet (list ref))
       (cell-value cell))))
 
-(defun set-async (sheet designator fetcher &key initial)
-  "Install (or convert the cell at) DESIGNATOR as an ASYNC-CELL with the given
-FETCHER and INITIAL value, preserving any mixins. Returns the initial value."
+;;; --- an engine-owned thread pool for pooled async fetchers ----------
+;;;
+;;; Opt in with (SET-ASYNC … :POOL T). Then a fetcher is a plain no-arg blocking
+;;; thunk, run on one of the pool's workers; the engine delivers its result (or
+;;; error), and — unlike a fetcher that spawns its own thread — the engine owns
+;;; these threads, so a bounded set is reused and SHUTDOWN-ASYNC-POOL cleans them
+;;; up. A tiny FIFO queue (a lock + a counting semaphore) feeds the workers.
+
+(defstruct (async-pool (:constructor %make-async-pool))
+  (lock (bt:make-lock "cellisp-async-pool"))
+  (sem (bt:make-semaphore))
+  (queue '() :type list)
+  (workers '() :type list)
+  (running t))
+
+(defvar *default-async-pool* nil "The lazily-created shared pool for :POOL T.")
+
+(defun %pool-loop (pool)
+  (loop
+    (bt:wait-on-semaphore (async-pool-sem pool))
+    (let ((task (bt:with-lock-held ((async-pool-lock pool))
+                  (pop (async-pool-queue pool)))))
+      (cond ((eq task :stop) (return))
+            (task (ignore-errors (funcall task)))))))
+
+(defun make-async-pool (&key (size 4))
+  "Create an engine-owned pool of SIZE worker threads for pooled async fetchers
+(see SET-ASYNC :POOL). Shut it down with SHUTDOWN-ASYNC-POOL."
+  (let ((pool (%make-async-pool)))
+    (setf (async-pool-workers pool)
+          (loop repeat size
+                collect (bt:make-thread (lambda () (%pool-loop pool))
+                                        :name "cellisp-async-pool")))
+    pool))
+
+(defun default-async-pool ()
+  (or *default-async-pool* (setf *default-async-pool* (make-async-pool))))
+
+(defun %pool-submit (pool task)
+  (bt:with-lock-held ((async-pool-lock pool))
+    (setf (async-pool-queue pool) (nconc (async-pool-queue pool) (list task))))
+  (bt:signal-semaphore (async-pool-sem pool)))
+
+(defun shutdown-async-pool (&optional (pool *default-async-pool*))
+  "Stop POOL's workers and join them (default: the shared pool). In-flight tasks
+finish; queued ones may not run. Call at teardown so engine-owned threads don't
+linger. No-op if POOL is NIL."
+  (when pool
+    (setf (async-pool-running pool) nil)
+    (dolist (w (async-pool-workers pool)) (declare (ignore w))
+      (%pool-submit pool :stop))                 ; one :stop per worker
+    (dolist (w (async-pool-workers pool)) (ignore-errors (bt:join-thread w)))
+    (setf (async-pool-workers pool) '())
+    (when (eq pool *default-async-pool*) (setf *default-async-pool* nil)))
+  (values))
+
+;;; --- async drivers --------------------------------------------------
+
+(defun set-async (sheet designator fetcher &key initial pool)
+  "Install (or convert the cell at) DESIGNATOR as an ASYNC-CELL with FETCHER and
+INITIAL value, preserving any mixins. Returns the initial value.
+
+Without :POOL, FETCHER is the *manual* form — a function of one arg (a DELIVER
+callback) that starts its own work (a thread, an event loop, …) and eventually
+calls it; the fetcher owns that concurrency. With :POOL non-NIL, FETCHER is a
+plain no-arg *blocking thunk*: REFRESH-ASYNC runs it on an engine-owned thread
+pool (T = the shared default pool, or a pool from MAKE-ASYNC-POOL) and delivers
+its return value, or its error via DELIVER-ERROR-ASYNC. In pooled mode the engine
+owns the worker threads — bounded and reusable, cleaned up by SHUTDOWN-ASYNC-POOL."
   (with-sheet-lock (sheet)
     (let* ((ref (resolve-ref-in sheet designator))
            (cell (ensure-cell sheet ref)))
@@ -437,36 +511,102 @@ FETCHER and INITIAL value, preserving any mixins. Returns the initial value."
       (morph-cell cell 'async-cell (cell-mixins cell))
       (setf (async-fetcher cell) fetcher
             (async-pending cell) nil
+            (async-pool cell) (cond ((null pool) nil)
+                                    ((eq pool t) (default-async-pool))
+                                    (t pool))
             (cell-value cell) initial
             (cell-err cell) nil)
       (recompute-closure sheet (cons ref (cell-dependents cell)))
       (cell-value cell))))
 
 (defun refresh-async (sheet designator)
-  "Trigger the async cell's fetcher (unless a fetch is already pending). The
-fetcher should start its work and return promptly; it delivers the value by
-calling the supplied callback, which routes to DELIVER-ASYNC."
-  (with-sheet-lock (sheet)
-    (let* ((ref (resolve-ref-in sheet designator))
-           (cell (find-cell sheet ref)))
-      (when (and (typep cell 'async-cell) (not (async-pending cell)))
-        (setf (async-pending cell) t)
-        (funcall (async-fetcher cell)
-                 (lambda (value) (deliver-async sheet ref value))))))
-  (values))
-
-(defun deliver-async (sheet designator value)
-  "Store VALUE into an async cell (typically from the fetcher's callback, on
-any thread) and recompute its dependents. No-op for a non-async/missing cell."
+  "Trigger the async cell's fetcher, superseding any in-flight fetch (its late
+result is dropped — last refresh wins). Bumps the cell's epoch and gates the
+delivery on it. In manual mode it hands the fetcher an epoch-gated DELIVER
+callback; in pooled mode it submits the blocking thunk to the pool and delivers
+its result or error for you."
   (with-sheet-lock (sheet)
     (let* ((ref (resolve-ref-in sheet designator))
            (cell (find-cell sheet ref)))
       (when (typep cell 'async-cell)
+        (let ((epoch (incf (async-epoch cell)))
+              (pool (async-pool cell))
+              (fetcher (async-fetcher cell)))
+          (setf (async-pending cell) t)
+          (if pool
+              (%pool-submit pool
+                (lambda ()
+                  (handler-case (deliver-async sheet ref (funcall fetcher) epoch)
+                    (error (e) (deliver-error-async sheet ref e epoch)))))
+              (funcall fetcher
+                       (lambda (value) (deliver-async sheet ref value epoch))))))))
+  (values))
+
+(defun cancel-async (sheet designator)
+  "Cancel any in-flight fetch for DESIGNATOR: bump its epoch so a late delivery is
+dropped, and clear PENDING so a fresh REFRESH-ASYNC can start. This cancels the
+*effect* — it doesn't forcibly stop the underlying work, but a pooled fetch's
+result is discarded when it arrives. No-op for a non-async/missing cell."
+  (with-sheet-lock (sheet)
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
+      (when (typep cell 'async-cell)
+        (incf (async-epoch cell))
+        (setf (async-pending cell) nil))))
+  (values))
+
+(defun deliver-async (sheet designator value &optional epoch)
+  "Store VALUE into an async cell (from the fetcher, any thread) and recompute its
+dependents. When EPOCH is given, the delivery is dropped unless it matches the
+cell's current epoch — so a cancelled or superseded fetch is ignored. No-op for a
+non-async/missing cell."
+  (with-sheet-lock (sheet)
+    (let* ((ref (resolve-ref-in sheet designator))
+           (cell (find-cell sheet ref)))
+      (when (and (typep cell 'async-cell)
+                 (or (null epoch) (= epoch (async-epoch cell))))
         (setf (cell-value cell) value
               (cell-err cell) nil
               (async-pending cell) nil)
         (recompute-closure sheet (cell-dependents cell)))))
   (values))
+
+(defun deliver-error-async (sheet designator error &optional epoch)
+  "Record a fetch FAILURE into an async cell (from the worker, any thread): store
+ERROR (a condition or a string) as the cell's error, clear PENDING, and recompute
+its dependents (which then error, as when reading any failed cell). Epoch-gated
+like DELIVER-ASYNC. No-op for a non-async/missing cell."
+  (with-sheet-lock (sheet)
+    (let* ((ref (resolve-ref-in sheet designator))
+           (cell (find-cell sheet ref)))
+      (when (and (typep cell 'async-cell)
+                 (or (null epoch) (= epoch (async-epoch cell))))
+        (setf (cell-err cell)
+              (cond ((typep error 'sheet-error) error)
+                    ((typep error 'condition)
+                     (make-condition 'cell-eval-error :ref ref :original error))
+                    (t (make-condition 'sheet-error :format-control "~A"
+                                       :format-arguments (list error))))
+              (cell-value cell) nil
+              (async-pending cell) nil)
+        (recompute-closure sheet (cell-dependents cell)))))
+  (values))
+
+(defun async-pending-p (sheet designator)
+  "True while a fetch for DESIGNATOR is in flight (started, not yet delivered)."
+  (with-sheet-lock (sheet)
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
+      (and (typep cell 'async-cell) (async-pending cell) t))))
+
+(defun async-status (sheet designator)
+  "Two values: an async cell's state — :PENDING, :ERROR, :OK, or :IDLE — and its
+value (or error condition). NIL for a non-async/missing cell."
+  (with-sheet-lock (sheet)
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
+      (when (typep cell 'async-cell)
+        (cond ((async-pending cell) (values :pending (cell-value cell)))
+              ((cell-err cell)       (values :error (cell-err cell)))
+              ((cell-value cell)     (values :ok (cell-value cell)))
+              (t                     (values :idle nil)))))))
 
 ;;; --- drivers: volatility (orthogonal attribute) ---------------------
 

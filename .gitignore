@@ -5,3 +5,7 @@
 *.lx64fsl
 *.o
 *.a
+
+# ocicl package manager (not used by this project)
+ocicl.csv
+ocicl/

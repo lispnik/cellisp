@@ -31,6 +31,8 @@
    #:note-set #:frozen-p #:with-actor #:*actor* #:*audit-clock*
    ;; cell-kind constructors / drivers
    #:set-external #:set-async #:refresh-async #:deliver-async
+   #:cancel-async #:deliver-error-async #:async-pending-p #:async-status
+   #:make-async-pool #:shutdown-async-pool
    #:set-volatile #:set-readonly #:set-logged #:cell-log #:set-cached
    #:observe #:unobserve #:debounce #:*debounce-delay*
    #:set-default #:set-transform #:set-validator #:set-timed #:cell-timing
