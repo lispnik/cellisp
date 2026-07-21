@@ -1,5 +1,22 @@
 # Examples
 
+### `tutorial.lisp` — the hands-on tutorial (tangled from `../TUTORIAL.org`)
+
+The runnable script behind the from-zero **[tutorial](../TUTORIAL.org)**. It is
+*tangled* (generated) from the literate `TUTORIAL.org` at the repo root — edit the
+`.org`, not this file, then re-tangle:
+
+```bash
+emacs --batch --eval '(require (quote ob-tangle))' \
+      --eval '(org-babel-tangle-file "TUTORIAL.org")'   # writes examples/tutorial.lisp
+sbcl --script examples/tutorial.lisp                     # or: ecl --load examples/tutorial.lisp
+```
+
+It walks the whole engine in one linear run: cells/formulas, recalc & per-cell
+errors, names & environment, the formula stdlib, observers/caching, editing
+(undo, transactions, `insert-row`, `copy-cell`, `spill`), workbooks & cross-sheet
+refs, the display layer, and persistence.
+
 ### `quarterly-model.lisp` → `quarterly-model.sheet`
 
 A small three-sheet financial model (Sales · Costs · Summary) that exercises much

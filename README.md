@@ -25,6 +25,24 @@ short-circuit so an edit only recomputes what actually changed.
 > **Formulas are unsandboxed Lisp.** A formula is `eval`'d, so treat any formula
 > input as arbitrary code execution.
 
+## Tutorial
+
+New here? **[`TUTORIAL.org`](TUTORIAL.org)** is a from-zero, hands-on walkthrough —
+cells and formulas, recalculation and errors, names and environments, the formula
+stdlib, cell behaviours, editing/transactions/spills, workbooks, the display
+layer, and persistence. It's a *literate program*: every code block tangles into
+one runnable script, so each snippet's output is what the code actually produces.
+
+```bash
+# tangle TUTORIAL.org -> examples/tutorial.lisp, then run it
+emacs --batch --eval '(require (quote ob-tangle))' \
+      --eval '(org-babel-tangle-file "TUTORIAL.org")'
+sbcl --script examples/tutorial.lisp
+```
+
+The tangled output is committed as [`examples/tutorial.lisp`](examples/tutorial.lisp),
+so you can run it directly without Emacs.
+
 ## Requirements
 
 - A Common Lisp implementation — the test suite runs on **SBCL**, **ECL**, and
