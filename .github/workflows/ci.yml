@@ -8,15 +8,24 @@ jobs:
   test:
     name: ${{ matrix.lisp }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15          # a debugger hang fails fast instead of running for hours
     strategy:
       fail-fast: false
       matrix:
-        lisp: [sbcl, ecl]        # both verified locally; the code is portable
+        lisp: [sbcl, ecl, ccl]   # portable; all run the full suite in CI
     steps:
       - uses: actions/checkout@v4
 
       - name: Install ${{ matrix.lisp }}
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.lisp }}
+        run: |
+          if [ "${{ matrix.lisp }}" = "ccl" ]; then
+            # CCL isn't in apt — install the release binary next to its heap image.
+            curl -sSL https://github.com/Clozure/ccl/releases/download/v1.13/ccl-1.13-linuxx86.tar.gz \
+              | tar xz -C "$HOME"
+            sudo ln -s "$HOME/ccl/lx86cl64" /usr/local/bin/ccl
+          else
+            sudo apt-get update && sudo apt-get install -y ${{ matrix.lisp }}
+          fi
 
       - name: Download Quicklisp
         run: curl -sSL https://beta.quicklisp.org/quicklisp.lisp -o /tmp/quicklisp.lisp

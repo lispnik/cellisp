@@ -1,7 +1,11 @@
 (defsystem "cellisp"
-  :description "A spreadsheet backend whose formula language is Common Lisp."
-  :version "0.1.0"
+  :description "A spreadsheet engine whose formula language is Common Lisp."
+  :version "1.0.0"
+  :author "Matthew Kennedy"
   :license "MIT"
+  :homepage "https://github.com/lispnik/cellisp"
+  :source-control (:git "https://github.com/lispnik/cellisp.git")
+  :bug-tracker "https://github.com/lispnik/cellisp/issues"
   :depends-on ("bordeaux-threads")
   :serial t
   :components ((:file "package")
@@ -27,6 +31,9 @@
 ;;; spreadsheet error tokens. Separate so the core engine carries no UI concern.
 (defsystem "cellisp/display"
   :description "A display/formatting layer over the Cellisp engine."
+  :version "1.0.0"
+  :author "Matthew Kennedy"
+  :license "MIT"
   :depends-on ("cellisp")
   :serial t
   :components ((:file "display"))

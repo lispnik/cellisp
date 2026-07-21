@@ -27,8 +27,8 @@ short-circuit so an edit only recomputes what actually changed.
 
 ## Requirements
 
-- A Common Lisp implementation — the test suite runs on **SBCL** and **ECL**
-  (both in CI; the code uses no implementation-specific symbols).
+- A Common Lisp implementation — the test suite runs on **SBCL**, **ECL**, and
+  **CCL** (all in CI; the code uses no implementation-specific symbols).
 - [`bordeaux-threads`](https://common-lisp.net/project/bordeaux-threads/) (per-sheet locking).
 - ASDF, and the project visible to it (e.g. symlinked into `~/quicklisp/local-projects/`).
 
