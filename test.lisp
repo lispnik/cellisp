@@ -2034,6 +2034,25 @@ the invariant always held."
   ;; a non-sheet form is rejected
   (check-signals sheet-error (form->sheet '(:not-a-sheet)))
 
+  ;; a saved sheet is data, not code: a #. reader macro in the file must be
+  ;; rejected at read time (READER-ERROR), never evaluated. LOAD-SHEET binds
+  ;; *READ-EVAL* to NIL to guarantee this.
+  (let ((path (merge-pathnames "cellisp-readeval-test.sheet"
+                               (uiop:temporary-directory)))
+        (*read-eval-canary* nil))
+    (declare (special *read-eval-canary*))
+    (with-open-file (o path :direction :output
+                            :if-exists :supersede :if-does-not-exist :create)
+      ;; if #. were honored, this would set the canary during READ
+      (write-string
+       "(:cellisp-sheet :version 1 :cells ((\"A1\" #.(setf *read-eval-canary* t))))"
+       o))
+    (unwind-protect
+         (progn
+           (check-signals reader-error (load-sheet path))
+           (check *read-eval-canary* nil))           ; the #. never fired
+      (when (probe-file path) (delete-file path))))
+
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Test failures: ~D" *fails*))
   t)

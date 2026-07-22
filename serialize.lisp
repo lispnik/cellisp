@@ -207,8 +207,14 @@ environment value is not readably printable."
   (values))
 
 (defun read-sheet (&optional (stream *standard-input*))
-  "Read and reconstruct a sheet previously written by WRITE-SHEET."
-  (let ((*package* (find-package '#:cellisp)))
+  "Read and reconstruct a sheet previously written by WRITE-SHEET.
+
+A saved sheet is data, not code: *READ-EVAL* is bound to NIL so a #. reader
+macro in a hand-crafted or tampered file cannot execute at read time. (Formulas
+still evaluate later, on recompute — the documented \"formulas are unsandboxed\"
+caveat — but the read step itself stays inert.)"
+  (let ((*package* (find-package '#:cellisp))
+        (*read-eval* nil))
     (form->sheet (read stream))))
 
 (defun save-sheet (sheet path)
@@ -267,8 +273,12 @@ environment value is not readably printable."
   (values))
 
 (defun read-workbook (&optional (stream *standard-input*))
-  "Read and reconstruct a workbook previously written by WRITE-WORKBOOK."
-  (let ((*package* (find-package '#:cellisp)))
+  "Read and reconstruct a workbook previously written by WRITE-WORKBOOK.
+
+As in READ-SHEET, *READ-EVAL* is bound to NIL so a #. in the file cannot execute
+at read time."
+  (let ((*package* (find-package '#:cellisp))
+        (*read-eval* nil))
     (form->workbook (read stream))))
 
 (defun save-workbook (workbook path)
