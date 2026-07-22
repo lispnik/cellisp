@@ -36,6 +36,21 @@ Lisp form that happens to read other cells with ~cell~ and ~cells~, and the
 engine tracks dependencies, recomputes exactly what changed, catches per-cell
 errors, and can persist and render the result.
 
+# The first tangled block: a banner marking the generated file. Kept out of the
+# rendered tutorial with :exports none, but it still tangles, so it is the head
+# of examples/tutorial.lisp and a fresh re-tangle reproduces it byte-for-byte.
+#+begin_src lisp :exports none
+;;;; -*- mode: lisp -*- GENERATED FILE — DO NOT EDIT.
+;;;;
+;;;; examples/tutorial.lisp is tangled from ../TUTORIAL.org. Edit the prose and
+;;;; code in TUTORIAL.org, then re-tangle to regenerate this file:
+;;;;
+;;;;   emacs --batch --eval '(require (quote ob-tangle))' \
+;;;;         --eval '(org-babel-tangle-file "TUTORIAL.org")'
+;;;;
+;;;; Run it with:  sbcl --script examples/tutorial.lisp
+#+end_src
+
 * Setup: loading the engine
 
 The first block loads the system. It mirrors the pattern used by the other

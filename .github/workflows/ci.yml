@@ -41,3 +41,39 @@ jobs:
           --load /tmp/quicklisp.lisp
           --eval '(quicklisp-quickstart:install)'
           --load "$GITHUB_WORKSPACE/.github/run-tests.lisp"
+
+  # The literate tutorial: prove examples/tutorial.lisp is in sync with
+  # TUTORIAL.org (re-tangle and diff), then run it — its own CHECK helper exits
+  # non-zero if any claimed output changed. SBCL only (the gate); no matrix.
+  tutorial:
+    name: tutorial
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL and Emacs
+        run: sudo apt-get update && sudo apt-get install -y sbcl emacs-nox
+
+      - name: Re-tangle and verify the committed script is in sync
+        run: |
+          emacs --batch \
+            --eval '(require (quote ob-tangle))' \
+            --eval '(org-babel-tangle-file "TUTORIAL.org")'
+          git diff --exit-code --ignore-blank-lines -- examples/tutorial.lisp \
+            || { echo "::error::examples/tutorial.lisp is out of sync with TUTORIAL.org — re-tangle and commit it."; exit 1; }
+
+      - name: Install Quicklisp
+        run: |
+          curl -sSL https://beta.quicklisp.org/quicklisp.lisp -o /tmp/quicklisp.lisp
+          sbcl --non-interactive \
+            --load /tmp/quicklisp.lisp \
+            --eval '(quicklisp-quickstart:install)'
+
+      - name: Register the project with ASDF
+        run: |
+          mkdir -p ~/quicklisp/local-projects
+          ln -s "$GITHUB_WORKSPACE" ~/quicklisp/local-projects/cellisp
+
+      - name: Run the tutorial (self-checking; non-zero exit on any mismatch)
+        run: sbcl --script examples/tutorial.lisp

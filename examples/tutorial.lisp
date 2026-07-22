@@ -1,3 +1,13 @@
+;;;; -*- mode: lisp -*- GENERATED FILE — DO NOT EDIT.
+;;;;
+;;;; examples/tutorial.lisp is tangled from ../TUTORIAL.org. Edit the prose and
+;;;; code in TUTORIAL.org, then re-tangle to regenerate this file:
+;;;;
+;;;;   emacs --batch --eval '(require (quote ob-tangle))' \
+;;;;         --eval '(org-babel-tangle-file "TUTORIAL.org")'
+;;;;
+;;;; Run it with:  sbcl --script examples/tutorial.lisp
+
 (require :asdf)
 (let ((ql (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
   (when (probe-file ql) (load ql)))
