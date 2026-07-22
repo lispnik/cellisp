@@ -44,6 +44,24 @@
              (format s "Invalid value ~S for cell ~A"
                      (invalid-value-value c) (ref-string (invalid-value-ref c))))))
 
+;;; The three below carry no extra slots — they inherit SHEET-ERROR's
+;;; format-control machinery — but exist as distinct classes so the display
+;;; layer's ERROR-TOKEN can map them by TYPE instead of by parsing report text.
+;;; They classify a reference/name/numeric failure at its signalling site.
+
+(define-condition bad-reference (sheet-error) ()
+  (:documentation "A reference to no valid grid position: the \"#REF!\" a
+structural delete leaves in a formula, or a coordinate shifted off the grid.
+The display layer renders it as #REF!."))
+
+(define-condition unknown-name (sheet-error) ()
+  (:documentation "An unparseable name, or an unknown sheet in a cross-sheet
+reference. Rendered as #NAME?."))
+
+(define-condition numeric-error (sheet-error) ()
+  (:documentation "A numeric-domain failure — e.g. an aggregate over no numbers.
+Rendered as #NUM!."))
+
 ;;;; ------------------------------------------------------------------
 ;;;; Sheet
 ;;;; ------------------------------------------------------------------

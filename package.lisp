@@ -61,7 +61,7 @@
    #:explain #:explain-tree
    ;; conditions
    #:sheet-error #:cyclic-reference #:cell-eval-error #:unbound-cell
-   #:readonly-cell #:invalid-value
+   #:readonly-cell #:invalid-value #:bad-reference #:unknown-name #:numeric-error
    #:cyclic-reference-cells #:cell-eval-error-original
    ;; formula helpers usable inside formulas
    #:cell #:cells #:sum #:average #:cnt

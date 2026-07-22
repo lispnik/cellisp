@@ -70,7 +70,11 @@ deterministic tests.")
   (if (typep designator '(or string symbol))
       (let* ((s (string designator))
              (bang (position #\! s)))
-        (if bang
+        ;; "#REF!" — the sentinel a structural delete leaves in a formula — also
+        ;; contains a '!', but it is a dangling *reference*, not a sheet-qualified
+        ;; one; leave it whole so it resolves to a BAD-REFERENCE (#REF!), not a
+        ;; missing sheet (#NAME?).
+        (if (and bang (not (string= s "#REF!")))
             (values (subseq s 0 bang) (subseq s (1+ bang)))
             (values nil designator)))
       (values nil designator)))
@@ -80,7 +84,7 @@ deterministic tests.")
 workbook or no such sheet."
   (let ((wb (and *sheet* (sheet-workbook *sheet*))))
     (or (and wb (find-sheet wb name))
-        (error 'sheet-error
+        (error 'unknown-name
                :format-control "No sheet named ~S in the workbook"
                :format-arguments (list name)))))
 
@@ -210,7 +214,7 @@ when there are no numbers, rather than dividing by zero (cf. #DIV/0)."
   (let ((ns (flatten-numbers args)))
     (if ns
         (/ (reduce #'+ ns) (length ns))
-        (error 'sheet-error
+        (error 'numeric-error
                :format-control "AVERAGE of no numeric values"))))
 
 ;;; --- dependency extraction ------------------------------------------

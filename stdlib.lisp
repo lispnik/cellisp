@@ -26,13 +26,13 @@ unlike FLATTEN-NUMBERS). Blanks (NIL) are dropped."
   "Least number in ARGS (non-numbers ignored). SHEET-ERROR if there are none."
   (let ((ns (flatten-numbers args)))
     (if ns (reduce #'min ns)
-        (error 'sheet-error :format-control "MINIMUM of no numeric values"))))
+        (error 'numeric-error :format-control "MINIMUM of no numeric values"))))
 
 (defun maximum (&rest args)
   "Greatest number in ARGS (non-numbers ignored). SHEET-ERROR if there are none."
   (let ((ns (flatten-numbers args)))
     (if ns (reduce #'max ns)
-        (error 'sheet-error :format-control "MAXIMUM of no numeric values"))))
+        (error 'numeric-error :format-control "MAXIMUM of no numeric values"))))
 
 (defun product (&rest args)
   "Product of the numbers in ARGS (non-numbers ignored). Empty -> 1."
@@ -43,7 +43,7 @@ unlike FLATTEN-NUMBERS). Blanks (NIL) are dropped."
   (let* ((ns (sort (copy-list (flatten-numbers args)) #'<))
          (n (length ns)))
     (cond ((null ns)
-           (error 'sheet-error :format-control "MEDIAN of no numeric values"))
+           (error 'numeric-error :format-control "MEDIAN of no numeric values"))
           ((oddp n) (nth (floor n 2) ns))
           (t (/ (+ (nth (1- (floor n 2)) ns) (nth (floor n 2) ns)) 2)))))
 
@@ -70,7 +70,7 @@ PREDICATE is applied defensively (see SUMIF/COUNTIF)."
   (let ((ns (remove-if-not (lambda (v) (ignore-errors (funcall predicate v)))
                            (flatten-numbers args))))
     (if ns (/ (reduce #'+ ns) (length ns))
-        (error 'sheet-error :format-control "AVERAGEIF of no matching numbers"))))
+        (error 'numeric-error :format-control "AVERAGEIF of no matching numbers"))))
 
 ;;; --- tolerant range reading -----------------------------------------
 

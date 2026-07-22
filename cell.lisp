@@ -21,7 +21,7 @@
     (loop for i from start below end
           for ch = (char-upcase (char s i))
           do (unless (char<= #\A ch #\Z)
-               (error 'sheet-error :format-control "Bad column letter ~S" :format-arguments (list ch)))
+               (error 'bad-reference :format-control "Bad column letter ~S" :format-arguments (list ch)))
              (setf n (+ (* n 26) (1+ (- (char-code ch) (char-code #\A))))))
     (1- n)))
 
@@ -38,11 +38,11 @@
   "Coerce DESIGNATOR (a ref cons or an A1 string/symbol) into a ref."
   (etypecase designator
     (cons
-     ;; a ref cons must be (non-negative-int . non-negative-int); reject a
-     ;; malformed cons at the boundary rather than let it fail deeper.
+     ;; a ref cons must be (non-negative-int . non-negative-int); a malformed
+     ;; coordinate is an off-grid position -> BAD-REFERENCE (#REF!).
      (unless (typep designator 'ref)
-       (error 'sheet-error :format-control "Malformed reference ~S"
-                           :format-arguments (list designator)))
+       (error 'bad-reference :format-control "Malformed reference ~S"
+                             :format-arguments (list designator)))
      designator)
     ((or string symbol)
      ;; strip $ markers ($A$1, $A1, A$1) — they annotate copy/paste absoluteness
@@ -51,20 +51,26 @@
             (i 0) (len (length s)))
        (loop while (and (< i len) (alpha-char-p (char s i))) do (incf i))
        (when (or (zerop i) (= i len))
-         (error 'sheet-error :format-control "Malformed reference ~S"
-                             :format-arguments (list s)))
+         ;; the literal "#REF!" a structural delete leaves is a dangling
+         ;; reference (#REF!); any other unparseable token is a bad name (#NAME?).
+         (if (string= s "#REF!")
+             (error 'bad-reference :format-control "Malformed reference ~S"
+                                   :format-arguments (list s))
+             (error 'unknown-name :format-control "Malformed reference ~S"
+                                  :format-arguments (list s))))
        (multiple-value-bind (n pos) (parse-integer s :start i :junk-allowed t)
          ;; require a row number that consumes the rest of the string, so
-         ;; junk like "A1B" / "A1.5" signals SHEET-ERROR rather than a raw
+         ;; junk like "A1B" / "A1.5" signals a bad NAME rather than a raw
          ;; PARSE-INTEGER error.
          (when (or (null n) (/= pos len))
-           (error 'sheet-error :format-control "Malformed reference ~S"
-                               :format-arguments (list s)))
+           (error 'unknown-name :format-control "Malformed reference ~S"
+                                :format-arguments (list s)))
          (let ((col (col-letters->index s 0 i))
                (row (1- n)))
            (when (minusp row)
-             (error 'sheet-error :format-control "Row must be >= 1 in ~S"
-                                 :format-arguments (list s)))
+             ;; row 0 / negative: a coordinate off the grid -> #REF!
+             (error 'bad-reference :format-control "Row must be >= 1 in ~S"
+                                   :format-arguments (list s)))
            (make-ref row col)))))))
 
 (defun ref-string (designator)

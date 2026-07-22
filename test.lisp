@@ -15,6 +15,10 @@
 (defclass demo-mixin-a () ((xa :initform :a)))
 (defclass demo-mixin-b () ((xb :initform :b)))
 
+;; named callback + sink for the threshold serialization round-trip test
+(defvar *thr-log* '())
+(defun thr-record (side value) (push (list side value) *thr-log*))
+
 ;; named functions for the symbol-referenced serialization test
 (defun ser-clamp (v) (min 100 (max 0 v)))
 (defun ser-even (v) (and (integerp v) (evenp v)))
@@ -73,18 +77,21 @@ structural edits have grown). Every operation keeps the graph acyclic. A
 SET-CELL/COPY-CELL whose formula reads an empty cell re-signals that cell's own
 error — a legitimate state (also produced by RECALC-ALL) — so it is swallowed."
   (handler-case
-      (case (nextr 10)
-        ((0 1 2 3 4) (let ((i (1+ (nextr n)))) (set-cell s (cref i) (rand-formula i))))
-        (5 (insert-row s (1+ (nextr n))))
-        (6 (delete-row s (1+ (nextr n))))
+      (case (nextr 12)
+        ((0 1 2 3) (let ((i (1+ (nextr n)))) (set-cell s (cref i) (rand-formula i))))
+        (4 (insert-row s (1+ (nextr n))))
+        (5 (delete-row s (1+ (nextr n))))
+        (6 (insert-column s (1+ (nextr n))))
+        (7 (delete-column s (1+ (nextr n))))
         ;; copy preserves acyclicity: a relative ref (< src) shifts to (< dst)
-        (7 (copy-cell s (cref (1+ (nextr n))) (cref (1+ (nextr n)))))
+        (8 (copy-cell s (cref (1+ (nextr n))) (cref (1+ (nextr n)))))
+        (9 (clear-cell s (cref (1+ (nextr n)))))
         (t (undo s)))
     (sheet-error () nil)))
 (defun property-incremental=full (&key (trials 40) (n 12) (edits 50) (seed 1))
-  "Run random trials mixing formula edits, insert/delete row, copy, and undo;
-after each op assert the sheet's values equal a full RECALC-ALL. Returns T iff
-the invariant always held."
+  "Run random trials mixing formula edits, insert/delete row AND column,
+copy-cell, clear-cell, and undo; after each op assert the sheet's values equal a
+full RECALC-ALL. Returns T iff the invariant always held."
   (setf *prng* seed)
   (dotimes (tr trials t)
     (let ((s (make-sheet)))
@@ -838,9 +845,15 @@ the invariant always held."
     (set-cell s "B1" '(year (cell "A1")))
     (set-cell s "B2" '(month (cell "A1")))
     (set-cell s "B3" '(day (cell "A1")))
+    (set-cell s "B4" '(weekday (cell "A1")))
     (check (get-value s "B1") 2026)
     (check (get-value s "B2") 7)
-    (check (get-value s "B3") 20))
+    (check (get-value s "B3") 20)
+    (check (get-value s "B4") 0))                ; 2026-07-20 is a Monday (0)
+  ;; weekday convention: 0 = Monday .. 6 = Sunday; 2000-01-01 was a Saturday
+  (check (weekday (date 2000 1 1)) 5)
+  ;; now is the current universal time (an integer); volatile by nature
+  (check (integerp (now)) t)
 
   ;; --- cell notes / comments ----------------------------------------
 
@@ -2209,6 +2222,52 @@ the invariant always held."
     (set-cell s "A2" '(cell "A1"))                    ; 150 -> 100 -> valid
     (check (get-value s "A2") 100)
     (check (nth-value 1 (get-value s "A2")) nil))     ; no INVALID-VALUE
+
+  ;; #12: the core signals dedicated condition classes now, so an empty
+  ;; aggregate is a NUMERIC-ERROR and a dangling delete ref is a BAD-REFERENCE.
+  (let ((s (make-sheet)))
+    (ignore-errors (set-cell s "A1" '(minimum)))     ; no numbers (re-signals)
+    (check (and (typep (nth-value 1 (get-value s "A1")) 'numeric-error) t) t))
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1) (set-cell s "A2" '(cell "A1"))
+    (delete-row s 1)                                 ; A1 deleted; A2's ref -> #REF!
+    (check (and (typep (nth-value 1 (get-value s "A1")) 'bad-reference) t) t))
+
+  ;; #10: a typed-input write guard (a NAMED predicate) survives a save/load
+  ;; round-trip — previously it was dropped and the loaded cell accepted anything.
+  (let ((path (merge-pathnames "cellisp-typedinput-test.sheet"
+                               (uiop:temporary-directory))))
+    (unwind-protect
+         (let ((s (make-sheet)))
+           (set-cell s "A1" 5)
+           (set-typed-input s "A1" 'numberp)         ; only numeric-literal formulas
+           (save-sheet s path)
+           (let ((r (load-sheet path)))
+             (check-signals readonly-cell (set-cell r "A1" '(+ 1 2)))  ; guard active
+             (check (get-value r "A1") 5)            ; rejected, unchanged
+             (set-cell r "A1" 9)                     ; a number is allowed
+             (check (get-value r "A1") 9)))
+      (when (probe-file path) (delete-file path))))
+
+  ;; #10: a threshold subscriber (a NAMED function) round-trips and fires on a
+  ;; later crossing.
+  (let ((path (merge-pathnames "cellisp-threshold-test.sheet"
+                               (uiop:temporary-directory))))
+    (unwind-protect
+         (let ((s (make-sheet)))
+           (set-cell s "A1" 0)
+           (on-threshold s "A1" 10 'thr-record)
+           (save-sheet s path)
+           (let ((r (load-sheet path)))
+             (setf *thr-log* '())
+             (set-cell r "A1" 20)                    ; crosses 10 upward
+             (check *thr-log* '((:above 20)))))
+      (when (probe-file path) (delete-file path))))
+
+  ;; #10: a file whose version is newer than this build fails loudly on load.
+  (check-signals sheet-error
+    (form->sheet (list :cellisp-sheet :version (+ 1 cellisp::*serialization-version*)
+                       :cells '())))
 
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Test failures: ~D" *fails*))

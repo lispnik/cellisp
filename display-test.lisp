@@ -71,24 +71,18 @@
                         :original (make-condition 'type-error :datum "x"
                                                   :expected-type 'number)))
          "#VALUE!")
-  ;; a dangling ref from a structural delete surfaces as a base sheet-error
-  ;; whose report carries the literal "#REF!"
-  (check (error-token (make-condition 'sheet-error
-                        :format-control "Malformed reference ~S"
-                        :format-arguments (list "#REF!"))) "#REF!")
-  (check (error-token (make-condition 'sheet-error
-                        :format-control "No sheet named ~S in the workbook"
-                        :format-arguments (list "Nope"))) "#NAME?")
-  (check (error-token (make-condition 'sheet-error
-                        :format-control "Malformed reference ~S"
-                        :format-arguments (list "notaname"))) "#NAME?")
-  ;; a reference shifted off the grid by a structural delete
-  (check (error-token (make-condition 'sheet-error
-                        :format-control "Row must be >= 1 in ~S"
-                        :format-arguments (list "A0"))) "#REF!")
-  (check (error-token (make-condition 'sheet-error
-                        :format-control "Bad column letter ~S"
-                        :format-arguments (list #\#))) "#REF!")
+  ;; the core signals dedicated classes; error-token maps them by TYPE
+  (check (error-token (make-condition 'bad-reference
+                        :format-control "x")) "#REF!")
+  (check (error-token (make-condition 'unknown-name
+                        :format-control "x")) "#NAME?")
+  (check (error-token (make-condition 'numeric-error
+                        :format-control "x")) "#NUM!")
+  ;; and those classes are what parse-ref / require-sheet actually raise
+  (check (error-token (nth-value 1 (ignore-errors (parse-ref "#REF!")))) "#REF!")
+  (check (error-token (nth-value 1 (ignore-errors (parse-ref "A0"))))    "#REF!")
+  (check (error-token (nth-value 1 (ignore-errors (parse-ref "notaname")))) "#NAME?")
+  ;; a plain sheet-error with no dedicated class -> #ERR!
   (check (error-token (make-condition 'sheet-error
                         :format-control "some other problem")) "#ERR!")
 
@@ -135,6 +129,11 @@
   (let* ((wb (make-workbook)) (s (add-sheet wb "Only")))
     (ignore-errors (set-cell s "A1" '(cell "Nope!A1")))
     (check (display-value s "A1") "#NAME?"))
+
+  ;; an aggregate over no numbers -> #NUM!
+  (let ((s (make-sheet)))
+    (ignore-errors (set-cell s "A1" '(minimum)))
+    (check (display-value s "A1") "#NUM!"))
 
   ;; a validator rejection surfaces (whatever the engine stores) as a token
   (let ((s (make-sheet)))

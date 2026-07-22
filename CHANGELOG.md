@@ -20,6 +20,20 @@ All notable changes to Cellisp are documented here. The format follows
   duplicate pool whose worker threads leak nor corrupt the global class table.
 
 ### Fixed
+- **Error tokens by condition class, and a deleted reference is now `#REF!`.**
+  `error-token` maps a cell's stored condition to a spreadsheet token by *type*
+  now — the core signals dedicated `bad-reference`/`unknown-name`/`numeric-error`
+  conditions at each failure site — instead of parsing the condition's report
+  text. This fixes two mis-tokenings: a reference left dangling by a structural
+  delete renders `#REF!` (was `#NAME?`, because the `#REF!` sentinel's `!` was
+  read as a sheet qualifier), and an aggregate over no numbers renders `#NUM!`
+  (was `#ERR!`).
+- **`typed-input` and `threshold` survive serialization.** Both mixins were
+  silently dropped on save; a `typed-input` write-guard (a named predicate) and a
+  `threshold` subscriber (a named function) now round-trip, so a loaded sheet
+  keeps its input constraints and threshold reactions. Loading a file whose
+  version is newer than the running build now fails loudly instead of silently
+  discarding unknown fields.
 - **Spill extent survives structural edits.** A row or column inserted or
   deleted *inside* a spill now updates the spill's recorded `(rows . cols)`
   extent (to the new bounding box), not just its anchor. Previously the extent
@@ -62,7 +76,10 @@ All notable changes to Cellisp are documented here. The format follows
 
 First stable release. A dependency-light spreadsheet **engine** (formulas are
 arbitrary Common Lisp) with a separate optional display layer, tested on SBCL and
-ECL in CI (543 core + 74 display checks, including property-based tests).
+ECL in CI with a broad automated check suite (core + display), including
+property-based tests. (The exact check counts are whatever `run-tests` reports
+on a given commit — see the tail of a CI run — rather than a figure hand-copied
+here that drifts as tests are added.)
 
 ### Engine (`cellisp`)
 - **Dependency graph + incremental recalculation** with a change-propagation

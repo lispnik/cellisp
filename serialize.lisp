@@ -22,6 +22,15 @@
 
 (defparameter *serialization-version* 1)
 
+(defun %check-version (version what)
+  "Signal if VERSION (from a loaded file) is newer than this build can read.
+Older or missing versions load as before; a newer one fails loudly rather than
+silently discarding fields it doesn't understand."
+  (when (and version (integerp version) (> version *serialization-version*))
+    (error 'sheet-error
+           :format-control "~A file version ~A is newer than this build supports (~A)"
+           :format-arguments (list what version *serialization-version*))))
+
 (defun fn-ref (x)
   "X when it is a non-NIL symbol naming a function (serializable as a
 reference), else NIL — an anonymous closure can't be written to a file, so
@@ -66,11 +75,17 @@ and closure-based config are not written."
       (let ((r (fn-ref (cell-validator cell)))) (when r (setf (getf pl :validator) r))))
     (when (typep cell 'transformed-mixin)
       (let ((r (fn-ref (cell-transform cell)))) (when r (setf (getf pl :transform) r))))
+    (when (typep cell 'typed-input-mixin)
+      (let ((r (fn-ref (input-predicate cell)))) (when r (setf (getf pl :typed-input) r))))
     (when (typep cell 'persisted-mixin)
       (let ((r (fn-ref (persist-sink cell)))) (when r (setf (getf pl :sink) r))))
     (when (typep cell 'observable-mixin)
       (let ((syms (remove nil (remove-if-not #'symbolp (cell-subscribers cell)))))
         (when syms (setf (getf pl :observers) syms))))
+    (when (typep cell 'threshold-mixin)
+      (let ((syms (remove nil (remove-if-not #'symbolp (threshold-subscribers cell)))))
+        (when syms (setf (getf pl :threshold-level) (threshold-level cell)
+                         (getf pl :threshold) syms))))
     ;; simple data config (no closures)
     (when (typep cell 'default-mixin)
       (setf (getf pl :default) t (getf pl :default-value) (cell-default cell)))
@@ -127,7 +142,7 @@ and closure-based config are not written."
   (destructuring-bind (&key version environment names notes merges spills cells
                        &allow-other-keys)
       (cdr form)
-    (declare (ignore version))
+    (%check-version version "Sheet")
     (let ((sheet (make-sheet :environment environment)))
       (dolist (pair names)
         ;; (name . "A1") is a single cell; (name "A1" "B3") is a range.
@@ -156,13 +171,15 @@ and closure-based config are not written."
       ;;    the wrappers above already in place).
       (set-cells sheet (loop for pl in cells
                              collect (list (getf pl :ref) (getf pl :formula))))
-      ;; 3. declarative attributes; READONLY / APPEND-ONLY go last, so locking
-      ;;    a cell never blocks installing its own formula above.
+      ;; 3. declarative attributes and write guards; READONLY / APPEND-ONLY /
+      ;;    TYPED-INPUT go last, so a guard never blocks installing the cell's
+      ;;    own formula above.
       (dolist (pl cells)
         (let ((ref (getf pl :ref)))
           (when (getf pl :volatile)    (set-volatile sheet ref t))
           (when (getf pl :frozen)      (set-frozen sheet ref t))
           (when (getf pl :append-only) (set-append-only sheet ref t))
+          (when (getf pl :typed-input) (set-typed-input sheet ref (getf pl :typed-input)))
           (when (getf pl :readonly)    (set-readonly sheet ref t))))
       ;; 4. restore durable history: add the mixin, then load its slot(s). No
       ;;    recompute happens after this, so the restored state stands as-is.
@@ -192,7 +209,9 @@ and closure-based config are not written."
       (dolist (pl cells)
         (let ((ref (getf pl :ref)))
           (when (getf pl :sink) (set-persist sheet ref (getf pl :sink)))
-          (dolist (obs (getf pl :observers)) (observe sheet ref obs))))
+          (dolist (obs (getf pl :observers)) (observe sheet ref obs))
+          (dolist (fn (getf pl :threshold))
+            (on-threshold sheet ref (getf pl :threshold-level) fn))))
       sheet)))
 
 (defun %serialize-form (form)
@@ -279,7 +298,7 @@ unserializable sheet signals without first truncating an existing good file."
     (error 'sheet-error :format-control "Not a cellisp workbook form: ~S"
                         :format-arguments (list form)))
   (destructuring-bind (&key version sheets &allow-other-keys) (cdr form)
-    (declare (ignore version))
+    (%check-version version "Workbook")
     (let ((wb (make-workbook)))
       ;; rebuild each sheet standalone (cross-sheet refs error transiently),
       ;; then attach under its name without a premature recompute.

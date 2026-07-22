@@ -23,14 +23,15 @@
 (defun error-token (condition)
   "Map a stored cell condition to a spreadsheet-style error token string.
 
-Excel-style mapping. The engine has no dedicated classes for #REF! (a dangling
-reference from a structural delete) or #NAME? (an unknown sheet/name) — both
-surface as a base SHEET-ERROR — so they are disambiguated by inspecting the
-condition's report text (a delete leaves the literal \"#REF!\" in it; a bad name
-reads \"Malformed reference\"/\"No sheet named\"). This report-string check is the
-pragmatic cost of keeping the display layer free of core-engine changes."
+Excel-style mapping, dispatched purely on the condition's TYPE — the core signals
+a dedicated class (BAD-REFERENCE, UNKNOWN-NAME, NUMERIC-ERROR) at each failure
+site, so the display layer no longer parses report text. The subclasses are
+listed before the SHEET-ERROR catch-all, since TYPECASE takes the first match."
   (typecase condition
     (cyclic-reference "#CYCLE!")
+    (bad-reference    "#REF!")            ; #REF! sentinel / off-grid coordinate
+    (unknown-name     "#NAME?")           ; unknown sheet / unparseable name
+    (numeric-error    "#NUM!")            ; e.g. an aggregate over no numbers
     (unbound-cell     "#REF!")            ; a formula read an empty cell
     (invalid-value    "#VALUE!")          ; validator / typed-input rejection
     (cell-eval-error                      ; a raw Lisp error, wrapped
@@ -40,19 +41,7 @@ pragmatic cost of keeping the display layer free of core-engine changes."
          (type-error       "#VALUE!")
          (arithmetic-error "#NUM!")       ; overflow, domain error, …
          (t                "#VALUE!"))))
-    (sheet-error
-     ;; No dedicated #REF!/#NAME? classes exist, so read the report text. A
-     ;; broken *reference to a position* — the literal "#REF!" a delete leaves,
-     ;; or a ref shifted off the grid ("Row must be >= 1", "Bad column letter")
-     ;; — is #REF!; an unknown sheet or unparseable name is #NAME?.
-     (let ((text (princ-to-string condition)))
-       (cond ((search "No sheet named" text) "#NAME?")
-             ((or (search "#REF!" text)
-                  (search "Row must be" text)
-                  (search "Bad column letter" text))
-              "#REF!")
-             ((search "Malformed reference" text) "#NAME?")
-             (t "#ERR!"))))
+    (sheet-error "#ERR!")                 ; any other engine error
     (t "#ERR!")))
 
 ;;;; --- value formatting -----------------------------------------------
