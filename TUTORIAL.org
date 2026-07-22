@@ -6,8 +6,10 @@
 This is a *literate program*. Every Lisp block below is part of one runnable
 script: tangling the document (extracting the code blocks in order) produces
 [[file:examples/tutorial.lisp]], and running that script is how the tutorial's
-correctness is checked. So the outputs quoted in the prose are the outputs the
-code actually produces — nothing here is hand-waved.
+correctness is checked. The script doesn't just *print* each result — it
+*asserts* it (see the ~check~ helper below), so if the engine ever stopped
+producing the outputs quoted here the run would fail with a non-zero exit.
+Nothing on this page is hand-waved.
 
 To regenerate and run it yourself:
 
@@ -20,6 +22,13 @@ emacs --batch \
 # run the tangled script
 sbcl --script examples/tutorial.lisp
 #+end_src
+
+The tail of a successful run looks like this:
+
+#+begin_example
+==== 43 checks, 0 failures ====
+==== tutorial complete ====
+#+end_example
 
 Cellisp is a spreadsheet *engine* whose formula language is Common Lisp itself.
 There is no formula mini-language and no bundled UI: a formula is an ordinary
@@ -47,12 +56,25 @@ in the display symbols so everything reads unqualified.
 (use-package '#:cellisp/display)
 #+end_src
 
-One tiny helper, used throughout, so each step prints a labelled result:
+Two tiny helpers, used throughout. ~show~ just prints a labelled value; ~check~
+prints *and verifies* it, tallying any mismatch so the whole run fails loudly if
+a claimed output ever changes.
 
 #+begin_src lisp
+(defparameter *checks* 0)
+(defparameter *failures* 0)
+
 (defun show (label value)
-  "Print LABEL => VALUE so each tutorial step demonstrates itself."
+  "Print LABEL => VALUE (display only; note it captures just the primary value)."
   (format t "~&~28A => ~S~%" label value))
+
+(defun check (label got expected)
+  "Print LABEL => GOT and verify GOT is EQUAL to EXPECTED, tallying failures."
+  (incf *checks*)
+  (format t "~&~28A => ~S~%" label got)
+  (unless (equal got expected)
+    (incf *failures*)
+    (format *error-output* "~&    !! FAIL ~A: expected ~S~%" label expected)))
 
 (format t "~&==== Cellisp tutorial ====~%")
 #+end_src
@@ -77,12 +99,31 @@ lists*, e.g. ~("A1" 10)~.
     ("A3" 30)
     ("A4" (sum (cells "A1" "A3")))))
 
-(show "A4 = sum(A1:A3)" (get-value *s* "A4"))
+(check "A4 = sum(A1:A3)" (get-value *s* "A4") 60)
 #+end_src
 
-~get-value~ returns two values — the value and an error (or ~NIL~). Here it
-prints ~60~. The formula ran as Lisp; ~cells~ returned ~(10 20 30)~ and ~sum~
-added them.
+~get-value~ returns two values — the value and an error (or ~NIL~). Here it is
+~60~; the formula ran as Lisp, ~cells~ returned ~(10 20 30)~ and ~sum~ added
+them. (Called for one value in argument position, as ~check~ does, only the
+primary value comes through — the error is the *second* value.)
+
+Because formulas are real Lisp, they are not limited to arithmetic — a formula
+can call any function, including one you define, and can return any value, not
+just a number:
+
+#+begin_src lisp
+(defun celsius->fahrenheit (c) (+ 32 (* c 9/5)))
+
+(set-cells *s*
+  '(("C1" 100)
+    ("C2" (celsius->fahrenheit (cell "C1")))       ; call an ordinary defun
+    ("C3" (mapcar #'evenp (cells "A1" "A3")))))     ; a formula returning a list
+(check "100C in F"        (get-value *s* "C2") 212)
+(check "evens in A1:A3"   (get-value *s* "C3") '(t t t))
+#+end_src
+
+That is the whole pitch: no formula DSL to outgrow, because the formula language
+is the programming language.
 
 * Recalculation and errors
 
@@ -91,7 +132,7 @@ Edit an input and every dependent recomputes automatically — you never call a
 
 #+begin_src lisp
 (set-cell *s* "A1" 100)
-(show "A4 after A1 := 100" (get-value *s* "A4"))   ; now 150
+(check "A4 after A1 := 100" (get-value *s* "A4") 150)
 #+end_src
 
 Errors are per-cell values, not crashes. A cell whose formula signals stores
@@ -109,15 +150,53 @@ caught and wrapped. Fix the cell and it recovers:
 
 #+begin_src lisp
 (set-cell *s* "B1" '(/ 10 2))
-(show "B1 repaired" (get-value *s* "B1"))           ; 5
+(check "B1 repaired" (get-value *s* "B1") 5)
 #+end_src
 
 *Gotcha — empty cells.* Reading a *single* empty cell with ~(cell "Z9")~
 signals ~unbound-cell~, but reading a *range* treats gaps as ~NIL~ so partly
-filled ranges still add up. And ~set-cell~ re-signals its own cell's error (so
-a mistake surfaces immediately at the REPL); in a non-interactive script, wrap
-it in ~ignore-errors~ if a deliberately-broken cell would otherwise abort the
-run. ~set-cells~ and ~get-value~ never re-signal.
+filled ranges still add up. When a range may also contain *errored* cells, use
+~safe-cells~, which omits both blanks and errors so an aggregate still works:
+
+#+begin_src lisp
+(set-cells *s* '(("E1" 5) ("E2" (/ 1 0)) ("E3" 7)))   ; E2 is broken
+(set-cell  *s* "E4" '(sum (safe-cells "E1" "E3")))     ; tolerates the hole
+(check "sum(safe E1:E3)" (get-value *s* "E4") 12)      ; 5 + 7, E2 skipped
+#+end_src
+
+Also: ~set-cell~ re-signals its own cell's error (so a mistake surfaces
+immediately at the REPL); in a non-interactive script, wrap it in ~ignore-errors~
+if a deliberately-broken cell would otherwise abort the run. ~set-cells~ and
+~get-value~ never re-signal.
+
+* Seeing the dependency graph: =explain=
+
+Dependency tracking is the engine's whole job, and you can *see* it. ~explain~
+walks a cell's precedents and prints an indented tree — each node showing the
+cell, its current value, and its formula. Let's give ~A4~ a dependent so the
+tree has depth:
+
+#+begin_src lisp
+(set-cell *s* "A5" '(* (cell "A4") 2))
+(check "A5 = A4 * 2" (get-value *s* "A5") 300)
+
+(format t "~&--- explain A5 ---~%")
+(explain *s* "A5")
+#+end_src
+
+#+begin_example
+--- explain A5 ---
+A5 = 300   (* (CELL "A4") 2)
+└─ A4 = 150   (SUM (CELLS "A1" "A3"))
+   ├─ A1 = 100   100
+   ├─ A2 = 20   20
+   └─ A3 = 30   30
+#+end_example
+
+For an *errored* cell the tree follows the failing branch down to the deepest
+cell that actually broke — the root cause — which makes it a debugger for
+formulas. (For programmatic access to the same edges, ~precedents~ and
+~dependents~ return a cell's neighbours as ~(row . col)~ conses.)
 
 * Names and the environment
 
@@ -127,19 +206,22 @@ before a formula uses them.
 
 #+begin_src lisp
 (defparameter *env-sheet*
-  (make-sheet :environment '((tax-rate . 0.08))))
+  (make-sheet :environment '((tax-rate . 8/100))))     ; an exact rational
 
 (set-cell *env-sheet* "A1" 250)                  ; a subtotal
 (set-name *env-sheet* "subtotal" "A1")           ; name the cell
 (set-cell *env-sheet* "A2" '(* (cell "subtotal") tax-rate))
 
-(show "tax on subtotal" (get-value *env-sheet* "A2"))   ; 20.0
+(check "tax on subtotal" (get-value *env-sheet* "A2") 20)   ; 250 * 8/100
 #+end_src
 
 Inside the formula, ~tax-rate~ is bound from the environment and the named cell
 is read with ~(cell "subtotal")~ — ~cell~ resolves names, A1 refs, and
 ~"Sheet!A1"~ cross-sheet refs alike. (~name-ref~ exists too, but it returns the
 cell's *reference* — its coordinates — for programmatic use, not its value.)
+Note the environment constant is an *exact rational* ~8/100~: formulas do exact
+arithmetic unless you hand them floats, so ~250 * 8/100~ is exactly ~20~, no
+rounding.
 
 Ranges get names too, which the stdlib aggregates accept directly:
 
@@ -147,25 +229,42 @@ Ranges get names too, which the stdlib aggregates accept directly:
 (set-cells *env-sheet* '(("D1" 3) ("D2" 4) ("D3" 5)))
 (set-range *env-sheet* "scores" "D1" "D3")
 (set-cell *env-sheet* "D4" '(sum (cells "scores")))
-(show "sum(scores)" (get-value *env-sheet* "D4"))       ; 12
+(check "sum(scores)" (get-value *env-sheet* "D4") 12)
 #+end_src
 
 * The formula standard library
 
 Formulas are Lisp, so the whole language is available — but a small stdlib adds
 the spreadsheet idioms. The range-reading ones (~sum~, ~average~, ~cnt~,
-~grid~, ~cells~) must run *inside* a formula, where the current sheet is bound;
-the pure helpers work anywhere.
+~grid~, ~cells~, ~safe-cells~) must run *inside* a formula, where the current
+sheet is bound; the pure helpers work anywhere.
 
 #+begin_src lisp
-(show "minimum" (minimum 3 1 2))                       ; 1
-(show "maximum" (maximum 3 1 2))                       ; 3
-(show "sortv"   (sortv '(3 1 2)))                      ; (1 2 3)
-(show "iferror" (iferror (elt #() 5) :fallback))       ; :FALLBACK
+(check "minimum" (minimum 3 1 2) 1)
+(check "maximum" (maximum 3 1 2) 3)
+(check "sortv"   (sortv '(3 1 2)) '(1 2 3))
+(check "iferror" (iferror (elt #() 5) :fallback) :fallback)
 #+end_src
 
 ~iferror~ is a macro: it evaluates its form and, if that signals, yields the
 fallback instead — the spreadsheet ~IFERROR(...)~ idiom.
+
+The range aggregates ~average~ and ~cnt~, and the predicate-filtered family
+~countif~/~sumif~/~averageif~, all read live cells from inside a formula:
+
+#+begin_src lisp
+(defparameter *agg* (make-sheet))
+(set-cells *agg*
+  '(("A1" 3) ("A2" 4) ("A3" 5)
+    ("B1" (average (cells "A1" "A3")))
+    ("B2" (cnt (cells "A1" "A3")))
+    ("B3" (countif #'evenp (cells "A1" "A3")))
+    ("B4" (sumif #'oddp (cells "A1" "A3")))))
+(check "average(A1:A3)" (get-value *agg* "B1") 4)
+(check "cnt(A1:A3)"     (get-value *agg* "B2") 3)
+(check "countif evenp"  (get-value *agg* "B3") 1)   ; just 4
+(check "sumif oddp"     (get-value *agg* "B4") 8)   ; 3 + 5
+#+end_src
 
 ~to-number~ coerces text to a number. Its convention is *explicit*: you tell it
 which character is the decimal point and (optionally) the grouping separator, so
@@ -174,62 +273,70 @@ fifteen-hundred. Note the wart: the ~default~ is a positional ~&optional~, so it
 must come *before* the keywords.
 
 #+begin_src lisp
-(show "to-number strict"   (to-number "42"))                     ; 42
-(show "to-number euro"     (to-number "1,5" nil :decimal #\,))   ; 1.5
-(show "to-number grouped"  (to-number "1,234.56" nil :group #\,)); 1234.56
-(show "to-number bad"      (to-number "oops" :na))               ; :NA
+(check "to-number strict"   (to-number "42") 42)
+(check "to-number euro"     (to-number "1,5" nil :decimal #\,) 1.5)
+(check "to-number grouped"  (to-number "1,234.56" nil :group #\,) 1234.56)
+(check "to-number bad"      (to-number "oops" :na) :na)
 #+end_src
 
 ~vlookup~ searches a table (a list of rows) and returns a column from the
-matching row:
+matching row; ~grid~ reads a rectangular block of live cells as such a table:
 
 #+begin_src lisp
-(show "vlookup"
-      (vlookup "banana"
-               '(("apple" 3) ("banana" 5) ("cherry" 8))
-               2))                                     ; 5
-#+end_src
+(check "vlookup"
+       (vlookup "banana" '(("apple" 3) ("banana" 5) ("cherry" 8)) 2)
+       5)
 
-And ~grid~ reads a rectangular block as a list of rows — here inside a formula,
-feeding ~vlookup~ over live cells:
-
-#+begin_src lisp
 (defparameter *prices* (make-sheet))
 (set-cells *prices*
   '(("A1" "apple")  ("B1" 3)
     ("A2" "banana") ("B2" 5)
     ("A3" "cherry") ("B3" 8)
     ("D1" (vlookup "cherry" (grid "A1" "B3") 2))))
-(show "vlookup over grid" (get-value *prices* "D1"))   ; 8
+(check "vlookup over grid" (get-value *prices* "D1") 8)
 #+end_src
 
-* Cell behaviours: observers and caching
+* Cell behaviours: observers, caching, validation
 
-Cells are CLOS objects and behaviours are mixins layered on in place. Two handy
-ones: ~observe~ fires a callback whenever a cell's value changes, and
-~set-cached~ marks a cell so an expensive value is reused until an input
-actually changes.
+Cells are CLOS objects and behaviours are mixins layered on in place. We reuse
+~*s*~ from the earlier sections (its ~A4 = sum(A1:A3)~ is still live). ~observe~
+fires a callback whenever a cell's value changes:
 
 #+begin_src lisp
 (defparameter *log* '())
 (observe *s* "A4" (lambda (new-value) (push new-value *log*)))
 
 (set-cell *s* "A1" 7)     ; A4 = 7 + 20 + 30 = 57, so the observer fires
-(show "observer log" *log*)                            ; (57)
+(check "observer log" *log* '(57))
 #+end_src
 
 The callback is a function of the new value; it ran because editing A1 forced
-A4 to recompute. Marking A4 cached does not change its value, only how often
-its formula is re-run:
+A4 to recompute. ~set-cached~ marks a cell so its formula is reused until an
+input actually changes — it does not change the value, only how often the
+formula re-runs:
 
 #+begin_src lisp
 (set-cached *s* "A4" t)
-(show "A4 (cached)" (get-value *s* "A4"))              ; 57
+(check "A4 (cached)" (get-value *s* "A4") 57)
+#+end_src
+
+A *validator* rejects values a predicate fails. The rejection signals
+~invalid-value~ (which ~set-cell~ re-signals, so wrap it), and the cell is left
+holding that error — which, as the next section shows, renders as ~#VALUE!~:
+
+#+begin_src lisp
+(defparameter *val* (make-sheet))
+(set-cell *val* "A1" 10)
+(set-validator *val* "A1" #'plusp)             ; only positives allowed
+(ignore-errors (set-cell *val* "A1" -5))       ; rejected
+(multiple-value-bind (v e) (get-value *val* "A1")
+  (check "rejected value" v nil)
+  (check "rejection token" (error-token e) "#VALUE!"))
 #+end_src
 
 Related toggles in the same family: ~set-frozen~ (make a cell read-only),
-~set-volatile~ (always recompute), ~set-ttl~ (expire a cached value after a
-time), and ~set-validator~ (reject values a predicate fails).
+~set-volatile~ (always recompute), and ~set-ttl~ (expire a cached value after a
+time).
 
 * Editing: undo, transactions, structure, spilling
 
@@ -241,9 +348,9 @@ operations. Start a fresh sheet:
 (set-cell *edit* "A1" 1)
 (set-cell *edit* "A1" 2)
 (undo *edit*)
-(show "A1 after undo" (get-value *edit* "A1"))         ; 1
+(check "A1 after undo" (get-value *edit* "A1") 1)
 (redo *edit*)
-(show "A1 after redo" (get-value *edit* "A1"))         ; 2
+(check "A1 after redo" (get-value *edit* "A1") 2)
 #+end_src
 
 ~with-transaction~ batches several edits into one sweep and one undo step:
@@ -253,7 +360,7 @@ operations. Start a fresh sheet:
   (set-cell *edit* "B1" 10)
   (set-cell *edit* "B2" 20)
   (set-cell *edit* "B3" '(sum (cells "B1" "B2"))))
-(show "B3 (transaction)" (get-value *edit* "B3"))      ; 30
+(check "B3 (transaction)" (get-value *edit* "B3") 30)
 #+end_src
 
 ~insert-row~ shifts cells (and the references pointing at them) down, and
@@ -261,17 +368,17 @@ operations. Start a fresh sheet:
 
 #+begin_src lisp
 (insert-row *edit* 1)                     ; everything moves down one row
-(show "A1 shifted to A2" (get-value *edit* "A2"))      ; 2
+(check "A1 shifted to A2" (get-value *edit* "A2") 2)
 (copy-cell *edit* "A2" "C5")
-(show "C5 (copied)" (get-value *edit* "C5"))           ; 2
+(check "C5 (copied)" (get-value *edit* "C5") 2)
 #+end_src
 
 A *spill* writes a computed sequence across a block from an anchor. A flat list
 spills down a column; ~respill~ re-fills and clears any shrunk leftover:
 
 #+begin_src lisp
-(show "spill extent" (spill *edit* "E1" '(list 100 200 300)))  ; (3 . 1)
-(show "E2 from spill"  (get-value *edit* "E2"))                ; 200
+(check "spill extent" (spill *edit* "E1" '(list 100 200 300)) '(3 . 1))
+(check "E2 from spill" (get-value *edit* "E2") 200)
 #+end_src
 
 * Workbooks and cross-sheet references
@@ -287,7 +394,7 @@ A *workbook* groups named sheets; a formula reaches another sheet with a
 (set-cells *sales* '(("A1" 100) ("A2" 200)))
 (set-cell  *summary* "A1" '(+ (cell "Sales!A1") (cell "Sales!A2")))
 
-(show "cross-sheet total" (get-value *summary* "A1"))  ; 300
+(check "cross-sheet total" (get-value *summary* "A1") 300)
 #+end_src
 
 Editing =Sales= flows straight through to =Summary= — cross-sheet dependencies
@@ -295,7 +402,7 @@ are tracked just like local ones:
 
 #+begin_src lisp
 (set-cell *sales* "A1" 150)
-(show "total after edit" (get-value *summary* "A1"))   ; 350
+(check "total after edit" (get-value *summary* "A1") 350)
 #+end_src
 
 * The display layer
@@ -318,8 +425,8 @@ familiar spreadsheet tokens via ~error-token~.
 (add-conditional *fmt* (lambda (v) (and (realp v) (minusp v)))
                  "LOSS" :column "C")                    ; negatives -> "LOSS"
 
-(show "B1 formatted" (display-value *report* "B1" :formats *fmt*))  ; "$1200.50"
-(show "C2 formatted" (display-value *report* "C2" :formats *fmt*))  ; "LOSS"
+(check "B1 formatted" (display-value *report* "B1" :formats *fmt*) "$1200.50")
+(check "C2 formatted" (display-value *report* "C2" :formats *fmt*) "LOSS")
 #+end_src
 
 Errored cells render as tokens. Because ~set-cell~ re-signals its own cell's
@@ -329,7 +436,7 @@ error, wrap the deliberately-broken cell in ~ignore-errors~ in a script:
 (ignore-errors (set-cell *report* "D1" '(/ 1 0)))
 (multiple-value-bind (v e) (get-value *report* "D1")
   (declare (ignore v))
-  (show "D1 as token" (error-token e)))                ; "#DIV/0!"
+  (check "D1 as token" (error-token e) "#DIV/0!"))
 #+end_src
 
 ~print-sheet~ lays the whole thing out as an aligned grid — values by default,
@@ -342,6 +449,23 @@ or the formulas behind them:
 (format t "~&--- formulas ---~%")
 (print-sheet *report* :formulas t :name "Report")
 #+end_src
+
+which prints:
+
+#+begin_example
+--- values ---
+Report
+  | A      | B        | C     | D       |
+--+--------+----------+-------+---------+
+1 | Widget | $1200.50 | 23.0% | #DIV/0! |
+2 | Gadget |  $890.00 |  LOSS |         |
+--- formulas ---
+Report
+  | A      | B      | C     | D        |
+--+--------+--------+-------+----------+
+1 | Widget | 1200.5 | 0.23  | =(/ 1 0) |
+2 | Gadget | 890    | -0.05 |          |
+#+end_example
 
 * Persistence
 
@@ -361,7 +485,7 @@ lambdas don't round-trip.)
 (save-sheet *persist* *sheet-path*)
 
 (let ((reloaded (load-sheet *sheet-path*)))
-  (show "A3 recomputed on load" (get-value reloaded "A3")))  ; 42
+  (check "A3 recomputed on load" (get-value reloaded "A3") 42))
 #+end_src
 
 Workbooks round-trip with their cross-sheet references intact:
@@ -372,14 +496,14 @@ Workbooks round-trip with their cross-sheet references intact:
 (save-workbook *wb* *wb-path*)
 
 (let ((wb2 (load-workbook *wb-path*)))
-  (show "reloaded Summary!A1"
-        (get-value (find-sheet wb2 "Summary") "A1")))         ; 350
+  (check "reloaded Summary!A1"
+         (get-value (find-sheet wb2 "Summary") "A1") 350))
 #+end_src
 
 * Capstone: a small invoice
 
 Tying it together — an environment constant (the tax rate), formulas, a named
-range, and a formatted render:
+range, a note, and a formatted render:
 
 #+begin_src lisp
 (defparameter *invoice* (make-sheet :environment '((tax-rate . 0.0875))))
@@ -392,6 +516,8 @@ range, and a formatted render:
     ("A7" "Tax")      ("D7" (* (cell "D6") tax-rate))
     ("A8" "Total")    ("D8" (+ (cell "D6") (cell "D7")))))
 (set-range *invoice* "line-items" "D2" "D4")
+(set-note  *invoice* "D7" "state sales tax")     ; a note, retrievable + saved
+(check "note on D7" (cell-note *invoice* "D7") "state sales tax")
 
 (defparameter *invoice-fmt* (make-formats))
 (set-column-format *invoice-fmt* "C" '(:currency "$" 2))
@@ -399,21 +525,55 @@ range, and a formatted render:
 
 (format t "~&--- invoice ---~%")
 (print-sheet *invoice* :formats *invoice-fmt* :name "Invoice")
-(show "invoice total" (get-value *invoice* "D8"))      ; 36.975
+(show "invoice total (float)" (get-value *invoice* "D8"))   ; 36.975
+#+end_src
+
+#+begin_example
+--- invoice ---
+Invoice
+  | A        | B   | C     | D      |
+--+----------+-----+-------+--------+
+1 | Item     | Qty | Price | Line   |
+2 | Notebook |   3 | $4.50 | $13.50 |
+3 | Pen      |  10 | $1.25 | $12.50 |
+4 | Marker   |   4 | $2.00 |  $8.00 |
+5 |          |     |       |        |
+6 | Subtotal |     |       | $34.00 |
+7 | Tax      |     |       |  $2.97 |
+8 | Total    |     |       | $36.97 |
+  names: LINE-ITEMS=D2:D4
+  env:   TAX-RATE=0.0875
+#+end_example
+
+Two things worth noting in that render. The footer lists the sheet's *names* and
+*environment* (the note we attached to D7 doesn't print here, but it is stored,
+readable with ~cell-note~, and serialized). And the tax line shows
+~$2.97~ while the underlying value is ~34.0 * 0.0875 = 2.975~: the ~0.0875~
+here is a *float*, and ~2.975~ isn't exactly representable, so the two-decimal
+render rounds down. Feed the formula an exact rational instead and the arithmetic
+is exact:
+
+#+begin_src lisp
+(check "exact tax (34 * 7/80)" (* 34 7/80) 119/40)   ; 119/40 = 2.975, exactly
 #+end_src
 
 That is the whole engine in miniature: cells holding Lisp formulas, automatic
-dependency-driven recomputation, per-cell error values, names and environments,
-undo/transactions/spills, workbooks, a display layer, and persistence — every
-line of which just ran to produce the output above.
+dependency-driven recomputation you can ~explain~, per-cell error values, names
+and environments, undo/transactions/spills, workbooks, a display layer, and
+persistence — every line of which just ran, and was *checked*, to produce the
+output above.
 
 #+begin_src lisp
+(format t "~&==== ~D checks, ~D failures ====~%" *checks* *failures*)
 (format t "~&==== tutorial complete ====~%")
+(when (plusp *failures*)
+  (uiop:quit 1))                 ; fail the run if any claimed output changed
 #+end_src
 
 * Where to go next
 
 - =README.md= — the full API reference.
 - =examples/= — larger runnable programs (a multi-sheet financial model, a
-  live CSV data source that spills, layered caching).
+  live CSV data source that spills, layered caching, an engine-owned async pool
+  with cancellation).
 - =CLAUDE.md= — the engine's internal design notes.

@@ -8,9 +8,20 @@
 (in-package #:cellisp)
 (use-package '#:cellisp/display)
 
+(defparameter *checks* 0)
+(defparameter *failures* 0)
+
 (defun show (label value)
-  "Print LABEL => VALUE so each tutorial step demonstrates itself."
+  "Print LABEL => VALUE (display only; note it captures just the primary value)."
   (format t "~&~28A => ~S~%" label value))
+
+(defun check (label got expected)
+  "Print LABEL => GOT and verify GOT is EQUAL to EXPECTED, tallying failures."
+  (incf *checks*)
+  (format t "~&~28A => ~S~%" label got)
+  (unless (equal got expected)
+    (incf *failures*)
+    (format *error-output* "~&    !! FAIL ~A: expected ~S~%" label expected)))
 
 (format t "~&==== Cellisp tutorial ====~%")
 
@@ -22,46 +33,76 @@
     ("A3" 30)
     ("A4" (sum (cells "A1" "A3")))))
 
-(show "A4 = sum(A1:A3)" (get-value *s* "A4"))
+(check "A4 = sum(A1:A3)" (get-value *s* "A4") 60)
+
+(defun celsius->fahrenheit (c) (+ 32 (* c 9/5)))
+
+(set-cells *s*
+  '(("C1" 100)
+    ("C2" (celsius->fahrenheit (cell "C1")))       ; call an ordinary defun
+    ("C3" (mapcar #'evenp (cells "A1" "A3")))))     ; a formula returning a list
+(check "100C in F"        (get-value *s* "C2") 212)
+(check "evens in A1:A3"   (get-value *s* "C3") '(t t t))
 
 (set-cell *s* "A1" 100)
-(show "A4 after A1 := 100" (get-value *s* "A4"))   ; now 150
+(check "A4 after A1 := 100" (get-value *s* "A4") 150)
 
 (set-cells *s* '(("B1" (/ 1 0))))
 (multiple-value-bind (val err) (get-value *s* "B1")
   (format t "~&B1: value=~S  error=~A~%" val (type-of err)))
 
 (set-cell *s* "B1" '(/ 10 2))
-(show "B1 repaired" (get-value *s* "B1"))           ; 5
+(check "B1 repaired" (get-value *s* "B1") 5)
+
+(set-cells *s* '(("E1" 5) ("E2" (/ 1 0)) ("E3" 7)))   ; E2 is broken
+(set-cell  *s* "E4" '(sum (safe-cells "E1" "E3")))     ; tolerates the hole
+(check "sum(safe E1:E3)" (get-value *s* "E4") 12)      ; 5 + 7, E2 skipped
+
+(set-cell *s* "A5" '(* (cell "A4") 2))
+(check "A5 = A4 * 2" (get-value *s* "A5") 300)
+
+(format t "~&--- explain A5 ---~%")
+(explain *s* "A5")
 
 (defparameter *env-sheet*
-  (make-sheet :environment '((tax-rate . 0.08))))
+  (make-sheet :environment '((tax-rate . 8/100))))     ; an exact rational
 
 (set-cell *env-sheet* "A1" 250)                  ; a subtotal
 (set-name *env-sheet* "subtotal" "A1")           ; name the cell
 (set-cell *env-sheet* "A2" '(* (cell "subtotal") tax-rate))
 
-(show "tax on subtotal" (get-value *env-sheet* "A2"))   ; 20.0
+(check "tax on subtotal" (get-value *env-sheet* "A2") 20)   ; 250 * 8/100
 
 (set-cells *env-sheet* '(("D1" 3) ("D2" 4) ("D3" 5)))
 (set-range *env-sheet* "scores" "D1" "D3")
 (set-cell *env-sheet* "D4" '(sum (cells "scores")))
-(show "sum(scores)" (get-value *env-sheet* "D4"))       ; 12
+(check "sum(scores)" (get-value *env-sheet* "D4") 12)
 
-(show "minimum" (minimum 3 1 2))                       ; 1
-(show "maximum" (maximum 3 1 2))                       ; 3
-(show "sortv"   (sortv '(3 1 2)))                      ; (1 2 3)
-(show "iferror" (iferror (elt #() 5) :fallback))       ; :FALLBACK
+(check "minimum" (minimum 3 1 2) 1)
+(check "maximum" (maximum 3 1 2) 3)
+(check "sortv"   (sortv '(3 1 2)) '(1 2 3))
+(check "iferror" (iferror (elt #() 5) :fallback) :fallback)
 
-(show "to-number strict"   (to-number "42"))                     ; 42
-(show "to-number euro"     (to-number "1,5" nil :decimal #\,))   ; 1.5
-(show "to-number grouped"  (to-number "1,234.56" nil :group #\,)); 1234.56
-(show "to-number bad"      (to-number "oops" :na))               ; :NA
+(defparameter *agg* (make-sheet))
+(set-cells *agg*
+  '(("A1" 3) ("A2" 4) ("A3" 5)
+    ("B1" (average (cells "A1" "A3")))
+    ("B2" (cnt (cells "A1" "A3")))
+    ("B3" (countif #'evenp (cells "A1" "A3")))
+    ("B4" (sumif #'oddp (cells "A1" "A3")))))
+(check "average(A1:A3)" (get-value *agg* "B1") 4)
+(check "cnt(A1:A3)"     (get-value *agg* "B2") 3)
+(check "countif evenp"  (get-value *agg* "B3") 1)   ; just 4
+(check "sumif oddp"     (get-value *agg* "B4") 8)   ; 3 + 5
 
-(show "vlookup"
-      (vlookup "banana"
-               '(("apple" 3) ("banana" 5) ("cherry" 8))
-               2))                                     ; 5
+(check "to-number strict"   (to-number "42") 42)
+(check "to-number euro"     (to-number "1,5" nil :decimal #\,) 1.5)
+(check "to-number grouped"  (to-number "1,234.56" nil :group #\,) 1234.56)
+(check "to-number bad"      (to-number "oops" :na) :na)
+
+(check "vlookup"
+       (vlookup "banana" '(("apple" 3) ("banana" 5) ("cherry" 8)) 2)
+       5)
 
 (defparameter *prices* (make-sheet))
 (set-cells *prices*
@@ -69,38 +110,46 @@
     ("A2" "banana") ("B2" 5)
     ("A3" "cherry") ("B3" 8)
     ("D1" (vlookup "cherry" (grid "A1" "B3") 2))))
-(show "vlookup over grid" (get-value *prices* "D1"))   ; 8
+(check "vlookup over grid" (get-value *prices* "D1") 8)
 
 (defparameter *log* '())
 (observe *s* "A4" (lambda (new-value) (push new-value *log*)))
 
 (set-cell *s* "A1" 7)     ; A4 = 7 + 20 + 30 = 57, so the observer fires
-(show "observer log" *log*)                            ; (57)
+(check "observer log" *log* '(57))
 
 (set-cached *s* "A4" t)
-(show "A4 (cached)" (get-value *s* "A4"))              ; 57
+(check "A4 (cached)" (get-value *s* "A4") 57)
+
+(defparameter *val* (make-sheet))
+(set-cell *val* "A1" 10)
+(set-validator *val* "A1" #'plusp)             ; only positives allowed
+(ignore-errors (set-cell *val* "A1" -5))       ; rejected
+(multiple-value-bind (v e) (get-value *val* "A1")
+  (check "rejected value" v nil)
+  (check "rejection token" (error-token e) "#VALUE!"))
 
 (defparameter *edit* (make-sheet))
 (set-cell *edit* "A1" 1)
 (set-cell *edit* "A1" 2)
 (undo *edit*)
-(show "A1 after undo" (get-value *edit* "A1"))         ; 1
+(check "A1 after undo" (get-value *edit* "A1") 1)
 (redo *edit*)
-(show "A1 after redo" (get-value *edit* "A1"))         ; 2
+(check "A1 after redo" (get-value *edit* "A1") 2)
 
 (with-transaction (*edit*)
   (set-cell *edit* "B1" 10)
   (set-cell *edit* "B2" 20)
   (set-cell *edit* "B3" '(sum (cells "B1" "B2"))))
-(show "B3 (transaction)" (get-value *edit* "B3"))      ; 30
+(check "B3 (transaction)" (get-value *edit* "B3") 30)
 
 (insert-row *edit* 1)                     ; everything moves down one row
-(show "A1 shifted to A2" (get-value *edit* "A2"))      ; 2
+(check "A1 shifted to A2" (get-value *edit* "A2") 2)
 (copy-cell *edit* "A2" "C5")
-(show "C5 (copied)" (get-value *edit* "C5"))           ; 2
+(check "C5 (copied)" (get-value *edit* "C5") 2)
 
-(show "spill extent" (spill *edit* "E1" '(list 100 200 300)))  ; (3 . 1)
-(show "E2 from spill"  (get-value *edit* "E2"))                ; 200
+(check "spill extent" (spill *edit* "E1" '(list 100 200 300)) '(3 . 1))
+(check "E2 from spill" (get-value *edit* "E2") 200)
 
 (defparameter *wb* (make-workbook))
 (defparameter *sales*   (add-sheet *wb* "Sales"))
@@ -109,10 +158,10 @@
 (set-cells *sales* '(("A1" 100) ("A2" 200)))
 (set-cell  *summary* "A1" '(+ (cell "Sales!A1") (cell "Sales!A2")))
 
-(show "cross-sheet total" (get-value *summary* "A1"))  ; 300
+(check "cross-sheet total" (get-value *summary* "A1") 300)
 
 (set-cell *sales* "A1" 150)
-(show "total after edit" (get-value *summary* "A1"))   ; 350
+(check "total after edit" (get-value *summary* "A1") 350)
 
 (defparameter *report* (make-sheet))
 (set-cells *report*
@@ -125,13 +174,13 @@
 (add-conditional *fmt* (lambda (v) (and (realp v) (minusp v)))
                  "LOSS" :column "C")                    ; negatives -> "LOSS"
 
-(show "B1 formatted" (display-value *report* "B1" :formats *fmt*))  ; "$1200.50"
-(show "C2 formatted" (display-value *report* "C2" :formats *fmt*))  ; "LOSS"
+(check "B1 formatted" (display-value *report* "B1" :formats *fmt*) "$1200.50")
+(check "C2 formatted" (display-value *report* "C2" :formats *fmt*) "LOSS")
 
 (ignore-errors (set-cell *report* "D1" '(/ 1 0)))
 (multiple-value-bind (v e) (get-value *report* "D1")
   (declare (ignore v))
-  (show "D1 as token" (error-token e)))                ; "#DIV/0!"
+  (check "D1 as token" (error-token e) "#DIV/0!"))
 
 (format t "~&--- values ---~%")
 (print-sheet *report* :formats *fmt* :name "Report")
@@ -148,15 +197,15 @@
 (save-sheet *persist* *sheet-path*)
 
 (let ((reloaded (load-sheet *sheet-path*)))
-  (show "A3 recomputed on load" (get-value reloaded "A3")))  ; 42
+  (check "A3 recomputed on load" (get-value reloaded "A3") 42))
 
 (defparameter *wb-path*
   (merge-pathnames "cellisp-tutorial-wb.sheet" (uiop:temporary-directory)))
 (save-workbook *wb* *wb-path*)
 
 (let ((wb2 (load-workbook *wb-path*)))
-  (show "reloaded Summary!A1"
-        (get-value (find-sheet wb2 "Summary") "A1")))         ; 350
+  (check "reloaded Summary!A1"
+         (get-value (find-sheet wb2 "Summary") "A1") 350))
 
 (defparameter *invoice* (make-sheet :environment '((tax-rate . 0.0875))))
 (set-cells *invoice*
@@ -168,6 +217,8 @@
     ("A7" "Tax")      ("D7" (* (cell "D6") tax-rate))
     ("A8" "Total")    ("D8" (+ (cell "D6") (cell "D7")))))
 (set-range *invoice* "line-items" "D2" "D4")
+(set-note  *invoice* "D7" "state sales tax")     ; a note, retrievable + saved
+(check "note on D7" (cell-note *invoice* "D7") "state sales tax")
 
 (defparameter *invoice-fmt* (make-formats))
 (set-column-format *invoice-fmt* "C" '(:currency "$" 2))
@@ -175,6 +226,11 @@
 
 (format t "~&--- invoice ---~%")
 (print-sheet *invoice* :formats *invoice-fmt* :name "Invoice")
-(show "invoice total" (get-value *invoice* "D8"))      ; 36.975
+(show "invoice total (float)" (get-value *invoice* "D8"))   ; 36.975
 
+(check "exact tax (34 * 7/80)" (* 34 7/80) 119/40)   ; 119/40 = 2.975, exactly
+
+(format t "~&==== ~D checks, ~D failures ====~%" *checks* *failures*)
 (format t "~&==== tutorial complete ====~%")
+(when (plusp *failures*)
+  (uiop:quit 1))                 ; fail the run if any claimed output changed
