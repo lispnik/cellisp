@@ -6,6 +6,19 @@ All notable changes to Cellisp are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Concurrency: unified workbook locking.** A workbook's sheets now share one
+  recursive lock instead of each holding its own. A cross-sheet cascade (an edit
+  on one sheet recomputing consumers on its peers) previously mutated those peer
+  sheets while holding only the originating sheet's lock — a data race with any
+  concurrent access to a peer, and a cross-sheet lock-ordering deadlock risk.
+  One lock per workbook covers every sheet a cascade touches and removes both.
+  Standalone sheets (and independent workbooks) still lock independently.
+- **Guarded global lazy-inits.** Creating the shared default async pool (and a
+  workbook's pool) and defining a new combined cell class are now each guarded by
+  a dedicated lock with double-checked locking, so a race can neither spawn a
+  duplicate pool whose worker threads leak nor corrupt the global class table.
+
 ### Fixed
 - **Stale error across an existence transition.** Assigning a previously
   unreferenced/placeholder cell a value equal to its placeholder default (e.g.

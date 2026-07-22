@@ -20,11 +20,26 @@
   (entries '() :type list)
   ;; An engine-owned async thread pool, created on demand for this workbook's
   ;; pooled async cells (SET-ASYNC :POOL T) and shut down by CLOSE-WORKBOOK.
-  (pool nil))
+  (pool nil)
+  ;; ONE recursive lock shared by every sheet in the workbook (see SHEET-LOCK).
+  ;; A workbook's sheets are interdependent — a cross-sheet cascade started on
+  ;; one sheet mutates its peers — so they cannot be locked independently without
+  ;; a race, and using a single lock also removes any cross-sheet lock-ordering
+  ;; deadlock. Recursive, so a cascade re-entering another sheet just re-takes it.
+  (lock (bt:make-recursive-lock "cellisp-workbook")))
 
 (defun make-workbook ()
   "Create an empty workbook. Add sheets to it with ADD-SHEET."
   (%make-workbook))
+
+(defun sheet-lock (sheet)
+  "The recursive lock that serializes access to SHEET: the workbook's shared lock
+when SHEET belongs to one, otherwise the sheet's own lock. Resolved dynamically
+from SHEET-WORKBOOK, so a sheet picks up the workbook lock the moment ADD-SHEET /
+%ATTACH-SHEET stamps its membership (both run before the sheet is shared with
+other threads). WITH-SHEET-LOCK calls this."
+  (let ((wb (sheet-workbook sheet)))
+    (if wb (workbook-lock wb) (sheet-own-lock sheet))))
 
 (defun %sheet-key (name) (string-upcase (string name)))
 

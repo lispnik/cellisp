@@ -391,6 +391,12 @@ a mixin (overriding some generic) and listing it here.")
   "The composable mixins currently on CELL."
   (loop for m in *mixin-classes* when (typep cell m) collect m))
 
+(defvar *class-def-lock* (bt:make-lock "cellisp-class-def")
+  "Guards the lazy EVAL of a combined cell class in COMBINED-CLASS. MORPH-CELL
+runs under a sheet/workbook lock, but distinct sheets (or standalone sheets)
+lock independently, so two threads can request the SAME new combination at once
+and race the global class table. This serializes the definition step only.")
+
 (defun combined-class (base mixins)
   "Find, or lazily define and memoize, the concrete class combining
 value-source class BASE with the *set* MIXINS (class names). With no mixins,
@@ -403,9 +409,15 @@ set maps to a single class — combinations of any arity are supported."
         (let* ((name (intern (format nil "~{~A+~}~A" mix base) :cellisp))
                (existing (find-class name nil)))
           (or existing
-              (progn
-                (eval `(defclass ,name (,@mix ,base) ()))
-                (find-class name)))))))
+              ;; double-checked: re-look under the lock so only one thread evals
+              ;; the DEFCLASS for a given combination (concurrent morphs of the
+              ;; same new kind on independently-locked sheets would otherwise race
+              ;; the class table).
+              (bt:with-lock-held (*class-def-lock*)
+                (or (find-class name nil)
+                    (progn
+                      (eval `(defclass ,name (,@mix ,base) ()))
+                      (find-class name)))))))))
 
 (defun morph-cell (cell base mixins)
   "CHANGE-CLASS CELL to the combination of value-source BASE and the set
@@ -455,6 +467,12 @@ Returns the freshly computed value."
 
 (defvar *default-async-pool* nil "The lazily-created shared pool for :POOL T.")
 
+(defvar *pool-init-lock* (bt:make-lock "cellisp-pool-init")
+  "Guards lazy creation of an async pool (the shared default pool, and a
+workbook's pool). Without it two threads observing NIL both build a pool — four
+worker threads each — but only one is stored; the other's threads leak forever,
+invisible to CLOSE-WORKBOOK / SHUTDOWN-ASYNC-POOL.")
+
 (defun %pool-loop (pool)
   (loop
     (bt:wait-on-semaphore (async-pool-sem pool))
@@ -474,13 +492,23 @@ Returns the freshly computed value."
     pool))
 
 (defun default-async-pool ()
-  (or *default-async-pool* (setf *default-async-pool* (make-async-pool))))
+  (or *default-async-pool*
+      ;; double-checked: build at most one pool no matter how many standalone
+      ;; sheets race to first use it.
+      (bt:with-lock-held (*pool-init-lock*)
+        (or *default-async-pool*
+            (setf *default-async-pool* (make-async-pool))))))
 
 (defun workbook-async-pool (workbook)
   "WORKBOOK's engine-owned async pool, created on first use. Pooled async cells on
 its sheets use it; CLOSE-WORKBOOK shuts it down."
   (or (workbook-pool workbook)
-      (setf (workbook-pool workbook) (make-async-pool))))
+      ;; A workbook's sheets share one lock, so callers on the same workbook are
+      ;; already serialized; the init lock additionally covers any direct caller
+      ;; and keeps this consistent with DEFAULT-ASYNC-POOL. Double-checked.
+      (bt:with-lock-held (*pool-init-lock*)
+        (or (workbook-pool workbook)
+            (setf (workbook-pool workbook) (make-async-pool))))))
 
 (defun close-workbook (workbook)
   "Release engine-owned resources held by WORKBOOK — currently its async thread

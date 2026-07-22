@@ -91,11 +91,21 @@
   ;; of refs whose value or error changed — the repaint set for a UI. NIL = off.
   ;; Not serialized (a live closure); reattach after LOAD-SHEET.
   (change-hook nil)
-  ;; Serializes all public access to this sheet (see comment above).
-  (lock (bt:make-recursive-lock "cellisp-sheet")))
+  ;; The recursive lock serializing public access to a STANDALONE sheet. A sheet
+  ;; that belongs to a workbook does NOT use this — it shares the workbook's
+  ;; single lock (see SHEET-LOCK), so one lock covers every sheet in the workbook
+  ;; and a cross-sheet cascade holds it over all the peers it mutates.
+  (own-lock (bt:make-recursive-lock "cellisp-sheet")))
+
+;; SHEET-LOCK is defined in workbook.lisp (it needs WORKBOOK-LOCK, defined
+;; there); declare it so this file compiles clean when WITH-SHEET-LOCK expands.
+(declaim (ftype (function (t) t) sheet-lock))
 
 (defmacro with-sheet-lock ((sheet) &body body)
-  "Run BODY holding SHEET's recursive lock."
+  "Run BODY holding SHEET's serializing lock — the workbook's shared lock when
+SHEET is in a workbook, otherwise the sheet's own (see SHEET-LOCK). The lock is
+recursive, so re-entry (a cross-sheet cascade, an observer that reads a cell) is
+safe."
   `(bt:with-recursive-lock-held ((sheet-lock ,sheet)) ,@body))
 
 (defun make-sheet (&key environment)

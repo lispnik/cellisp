@@ -2110,6 +2110,75 @@ the invariant always held."
            (check (get-value (load-sheet path) "A1") 42))   ; prior file untouched
       (when (probe-file path) (delete-file path))))
 
+  ;; --- concurrency redesign: unified workbook lock + guarded lazy inits ---
+
+  ;; Concurrent writers across DIFFERENT sheets of one workbook, with a
+  ;; cross-sheet dependency and a concurrent cross-sheet reader. All sheets in a
+  ;; workbook share one lock, so the cross-sheet cascade and the reader can't
+  ;; race into a torn state; the settled result must be consistent.
+  (let* ((wb (make-workbook))
+         (data (add-sheet wb "Data"))
+         (summary (add-sheet wb "Summary"))
+         (k 20))
+    (loop for i from 1 to k do (set-cell data (format nil "A~D" i) 0))
+    (set-cell data "B1" `(sum (cells "A1" ,(format nil "A~D" k))))
+    (set-cell summary "C1" '(cell "Data!B1"))            ; cross-sheet consumer
+    (let ((threads (append
+                    (loop repeat 8 collect
+                          (bt:make-thread
+                           (lambda ()
+                             (dotimes (n 300)
+                               (set-cell data (format nil "A~D" (1+ (mod n k)))
+                                         (mod (* n 7) 100))))))
+                    (list (bt:make-thread
+                           (lambda () (dotimes (n 300) (get-value summary "C1"))))))))
+      (mapc #'bt:join-thread threads))
+    ;; settled state is internally consistent (a full recalc changes nothing)
+    (let ((db (cells-snapshot data)) (sb (cells-snapshot summary)))
+      (recalc-all data) (recalc-all summary)
+      (check (equal db (cells-snapshot data)) t)
+      (check (equal sb (cells-snapshot summary)) t))
+    ;; and the cross-sheet consumer equals its producer equals the live sum
+    (check (get-value summary "C1") (get-value data "B1"))
+    (check (get-value data "B1")
+           (loop for i from 1 to k sum (get-value data (format nil "A~D" i)))))
+
+  ;; The shared default async pool is created at most once under a race (the
+  ;; init lock), so no worker threads leak. Reset it, hammer DEFAULT-ASYNC-POOL
+  ;; from N threads, and assert they all see the same single pool.
+  (let ((n 8) (pools (make-array 8)))
+    (shutdown-async-pool)                                ; drop any existing shared pool
+    (setf cellisp::*default-async-pool* nil)
+    (unwind-protect
+         (progn
+           (let ((threads (loop for tid below n collect
+                                (let ((tid tid))
+                                  (bt:make-thread
+                                   (lambda ()
+                                     (setf (svref pools tid)
+                                           (cellisp::default-async-pool))))))))
+             (mapc #'bt:join-thread threads))
+           (check (every (lambda (p) (eq p (svref pools 0))) pools) t)
+           (check (and (svref pools 0) t) t))
+      (shutdown-async-pool)))                            ; join the pool's workers
+
+  ;; Concurrent morphs to the SAME new combined class must interleave to one
+  ;; class object, not race the class table (the class-def lock). Each thread
+  ;; builds a fresh cell and layers observe + set-cached on it.
+  (let ((n 8) (classes (make-array 8)))
+    (let ((threads (loop for tid below n collect
+                         (let ((tid tid))
+                           (bt:make-thread
+                            (lambda ()
+                              (let ((s (make-sheet)))
+                                (set-cell s "A1" 1)
+                                (observe s "A1" (lambda (v) (declare (ignore v)) nil))
+                                (set-cached s "A1" t)
+                                (setf (svref classes tid)
+                                      (class-of (cellisp::find-cell s "A1"))))))))))
+      (mapc #'bt:join-thread threads))
+    (check (every (lambda (c) (eq c (svref classes 0))) classes) t))
+
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Test failures: ~D" *fails*))
   t)
