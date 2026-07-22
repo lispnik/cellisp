@@ -13,8 +13,11 @@
 ;;;; sources, validators, transforms, callbacks, schedulers, clocks — cannot
 ;;;; be written to a file; reattach those after loading. Formulas and the
 ;;;; environment must be READABLY printable (numbers, strings, symbols,
-;;;; lists); WRITE-SHEET binds *print-readably* so anything else fails loudly
-;;;; rather than round-tripping silently wrong.
+;;;; lists). Before writing, the produced form is validated by reading it back
+;;;; (see %SERIALIZE-FORM): a value that is not readably printable (a closure,
+;;;; hash-table, structure) signals a SHEET-ERROR at save time — before the
+;;;; target file is touched — rather than silently writing a file that fails
+;;;; only on load. On read, *READ-EVAL* is bound NIL so a #. cannot execute.
 ;;;; ------------------------------------------------------------------
 
 (defparameter *serialization-version* 1)
@@ -192,18 +195,38 @@ and closure-based config are not written."
           (dolist (obs (getf pl :observers)) (observe sheet ref obs))))
       sheet)))
 
+(defun %serialize-form (form)
+  "Print FORM to a string with the serialization printer settings, then verify it
+reads back (with *READ-EVAL* NIL) — so a value that is not readably printable (a
+closure, hash-table, or structure that slipped into a formula or the environment)
+fails loudly HERE, with a clear SHEET-ERROR, instead of silently producing a file
+that errors only on load. Returns the validated string.
+
+*PRINT-ESCAPE* (not *PRINT-READABLY*) keeps strings clean as \"A1\" rather than
+SBCL's base-string #A(...) syntax; our data (numbers/strings/symbols/lists)
+round-trips either way, so the explicit read-back is what enforces readability."
+  (let ((s (let ((*package* (find-package '#:cellisp))
+                 (*print-escape* t)
+                 (*print-readably* nil)
+                 (*print-circle* t))
+             (prin1-to-string form))))
+    (handler-case
+        (let ((*package* (find-package '#:cellisp))
+              (*read-eval* nil))
+          (read-from-string s))
+      (error (e)
+        (error 'sheet-error
+               :format-control "Sheet is not serializable (a value is not ~
+readably printable): ~A"
+               :format-arguments (list e))))
+    s))
+
 (defun write-sheet (sheet &optional (stream *standard-output*))
-  "Write SHEET to STREAM as one readable form. Signals if a formula or
-environment value is not readably printable."
-  ;; *print-escape* (not *print-readably*) keeps strings clean as "A1" rather
-  ;; than SBCL's base-string #A(...) syntax; our data (numbers/strings/symbols/
-  ;; lists) round-trips either way, and anything unreadable fails at READ.
-  (let ((*package* (find-package '#:cellisp))
-        (*print-escape* t)
-        (*print-readably* nil)
-        (*print-circle* t))
-    (prin1 (sheet->form sheet) stream)
-    (terpri stream))
+  "Write SHEET to STREAM as one readable form. Signals a SHEET-ERROR if a formula
+or environment value is not readably printable (validated before anything is
+written — see %SERIALIZE-FORM)."
+  (write-string (%serialize-form (sheet->form sheet)) stream)
+  (terpri stream)
   (values))
 
 (defun read-sheet (&optional (stream *standard-input*))
@@ -218,10 +241,14 @@ caveat — but the read step itself stays inert.)"
     (form->sheet (read stream))))
 
 (defun save-sheet (sheet path)
-  "Write SHEET to the file at PATH, overwriting any existing file."
-  (with-open-file (s path :direction :output
-                          :if-exists :supersede :if-does-not-exist :create)
-    (write-sheet sheet s))
+  "Write SHEET to the file at PATH, overwriting any existing file. The sheet is
+serialized and validated (see %SERIALIZE-FORM) *before* PATH is opened, so an
+unserializable sheet signals without first truncating an existing good file."
+  (let ((content (%serialize-form (sheet->form sheet))))
+    (with-open-file (s path :direction :output
+                            :if-exists :supersede :if-does-not-exist :create)
+      (write-string content s)
+      (terpri s)))
   (values))
 
 (defun load-sheet (path)
@@ -263,13 +290,10 @@ caveat — but the read step itself stays inert.)"
       wb)))
 
 (defun write-workbook (workbook &optional (stream *standard-output*))
-  "Write WORKBOOK to STREAM as one readable form."
-  (let ((*package* (find-package '#:cellisp))
-        (*print-escape* t)
-        (*print-readably* nil)
-        (*print-circle* t))
-    (prin1 (workbook->form workbook) stream)
-    (terpri stream))
+  "Write WORKBOOK to STREAM as one readable form. Signals a SHEET-ERROR (before
+writing anything) if any value is not readably printable — see %SERIALIZE-FORM."
+  (write-string (%serialize-form (workbook->form workbook)) stream)
+  (terpri stream)
   (values))
 
 (defun read-workbook (&optional (stream *standard-input*))
@@ -282,10 +306,14 @@ at read time."
     (form->workbook (read stream))))
 
 (defun save-workbook (workbook path)
-  "Write WORKBOOK to the file at PATH, overwriting any existing file."
-  (with-open-file (s path :direction :output
-                          :if-exists :supersede :if-does-not-exist :create)
-    (write-workbook workbook s))
+  "Write WORKBOOK to the file at PATH, overwriting any existing file. Serialized
+and validated before PATH is opened, so an unserializable workbook signals
+without first truncating an existing good file (see SAVE-SHEET)."
+  (let ((content (%serialize-form (workbook->form workbook))))
+    (with-open-file (s path :direction :output
+                            :if-exists :supersede :if-does-not-exist :create)
+      (write-string content s)
+      (terpri s)))
   (values))
 
 (defun load-workbook (path)

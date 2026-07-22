@@ -2053,6 +2053,63 @@ the invariant always held."
            (check *read-eval-canary* nil))           ; the #. never fired
       (when (probe-file path) (delete-file path))))
 
+  ;; --- regressions for code-review findings --------------------------
+
+  ;; An explicit assignment that leaves the stored value unchanged (NIL) must
+  ;; still refresh dependents that errored on the cell's prior absence — the
+  ;; value-only change short-circuit used to skip them, leaving a stale error.
+  (let ((s (make-sheet)))
+    (ignore-errors (set-cell s "A1" '(cell "B1")))        ; B1 absent -> A1 UNBOUND-CELL
+    (check (and (typep (nth-value 1 (get-value s "A1")) 'unbound-cell) t) t)
+    (set-cell s "B1" nil)                                 ; B1 now assigned (still NIL)
+    (check (get-value s "A1") nil)                        ; A1 recovered...
+    (check (nth-value 1 (get-value s "A1")) nil))         ; ...with no stale error
+  ;; same via the batch path (set-cells), dependent revisits in one sweep
+  (let ((s (make-sheet)))
+    (ignore-errors (set-cell s "A1" '(+ 1 (cell "B1"))))
+    (check (and (typep (nth-value 1 (get-value s "A1")) 'unbound-cell) t) t)
+    (set-cells s '(("B1" 0)))
+    (check (get-value s "A1") 1))
+
+  ;; set-cells targeting a NAMED cell must not choke in the undo capture (it
+  ;; used to PARSE-REF the name and signal); undo then restores the right cell.
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (set-name s "total" "A1")
+    (set-cells s '(("total" 5)))
+    (check (get-value s "total") 5)
+    (undo s)
+    (check (get-value s "A1") 1))
+
+  ;; An OBSERVE callback on an async cell must fire when a value is delivered
+  ;; (DELIVER-ASYNC seeds the cell itself, not only its dependents).
+  (let ((s (make-sheet)) (log '()) (deliver nil))
+    (set-async s "A1" (lambda (d) (setf deliver d)) :initial 0)
+    (observe s "A1" (lambda (v) (push v log)))
+    (refresh-async s "A1")
+    (funcall deliver 99)
+    (check log '(99)))
+
+  ;; sumif/averageif apply the predicate defensively (a float that trips EVENP
+  ;; in a mixed range must not abort the whole aggregate), matching countif.
+  (check (sumif #'evenp 1.5 2 4) 6)
+  (check (averageif #'evenp 1.5 2 4) 3)
+  (check (countif #'evenp 1.5 2 4) 2)
+
+  ;; A sheet carrying a value that is not readably printable must fail loudly at
+  ;; SAVE — before the target file is opened — leaving any existing file intact.
+  (let ((path (merge-pathnames "cellisp-unreadable-test.sheet"
+                               (uiop:temporary-directory))))
+    (unwind-protect
+         (let ((good (make-sheet)) (bad (make-sheet)))
+           (set-cell good "A1" 42)
+           (save-sheet good path)                          ; a valid prior file
+           (setf (cellisp::sheet-environment bad)
+                 (list (cons 'h (make-hash-table))))        ; not readably printable
+           (check-signals sheet-error (save-sheet bad path))
+           (check (get-value (load-sheet path) "A1") 42))   ; prior file untouched
+      (when (probe-file path) (delete-file path))))
+
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Test failures: ~D" *fails*))
   t)

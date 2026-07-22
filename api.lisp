@@ -126,6 +126,16 @@ one recomputed on every recalc regardless of whether a precedent changed
 is explicitly passed, so re-setting a formula doesn't silently demote it."
   (with-sheet-lock (sheet)
     (let* ((ref (resolve-ref-in sheet designator))
+           (prior (find-cell sheet ref))
+           ;; A cell nobody has assigned yet — absent, or a bare-reference
+           ;; placeholder (no formula/value/error) created only to hold a
+           ;; back-link — may satisfy dependents that errored on its absence
+           ;; (UNBOUND-CELL). Its stored value/error can be unchanged by this
+           ;; assignment (e.g. assigning NIL), so the value-change short-circuit
+           ;; would skip those dependents; force them to revisit. This mirrors
+           ;; CLEAR-CELL's reverse (content -> absent) transition.
+           (revisit (and prior (not (%cell-content-p prior))
+                         (copy-list (cell-dependents prior))))
            (snapshot (capture-cells sheet (list ref)))   ; before ENSURE (:absent if new)
            (cell (ensure-cell sheet ref)))
       (unless (cell-writable-p cell formula) (error 'readonly-cell :ref ref))
@@ -137,9 +147,10 @@ is explicitly passed, so re-setting a formula doesn't silently demote it."
       (cond
         (*deferred*                          ; inside a transaction: defer recompute
          (setf (gethash ref *deferred*) t)
+         (dolist (r revisit) (setf (gethash r *deferred*) t))
          formula)
         (t
-         (recompute-closure sheet (list ref))
+         (recompute-closure sheet (cons ref revisit))
          (if (cell-err cell)
              (error (cell-err cell))
              (cell-value cell)))))))
@@ -157,28 +168,41 @@ its condition as usual (readable via GET-VALUE) and one broken cell does not
 abort the batch. Returns the list of resulting values in input order (NIL
 for a cell that errored). A later pair for the same cell wins."
   (with-sheet-lock (sheet)
-    ;; guard first: refuse the whole batch if any existing target is read-only
-    (dolist (pair bindings)
-      (let* ((ref (resolve-ref-in sheet (first pair)))
-             (existing (find-cell sheet ref)))
-        (when (and existing (not (cell-writable-p existing (second pair))))
-          (error 'readonly-cell :ref ref))))
-    (push-undo sheet (capture-cells sheet (mapcar (lambda (p) (parse-ref (first p)))
-                                                  bindings)))
-    (let* ((time (funcall *audit-clock*))    ; one timestamp for the whole batch
-           (refs (loop for (designator formula) in bindings
-                       for ref = (resolve-ref-in sheet designator)
-                       for cell = (ensure-cell sheet ref)
-                       do (note-set cell sheet ref formula *actor* time)
-                          (setf (cell-formula cell) formula)
-                       collect ref)))
-      (cond
-        (*deferred*                          ; inside a transaction: defer recompute
-         (dolist (r refs) (setf (gethash r *deferred*) t))
-         (mapcar (lambda (r) (declare (ignore r)) nil) refs))
-        (t
-         (recompute-closure sheet refs)
-         (mapcar (lambda (r) (get-value sheet r)) refs))))))
+    ;; guard first: refuse the whole batch if any existing target is read-only.
+    ;; While here, note any target that is unassigned (absent or a bare-reference
+    ;; placeholder): assigning it may satisfy dependents that errored on its
+    ;; absence even without changing its stored value, so those dependents must
+    ;; revisit (see SET-CELL for the rationale).
+    (let ((revisit '()))
+      (dolist (pair bindings)
+        (let* ((ref (resolve-ref-in sheet (first pair)))
+               (existing (find-cell sheet ref)))
+          (when (and existing (not (cell-writable-p existing (second pair))))
+            (error 'readonly-cell :ref ref))
+          (when (and existing (not (%cell-content-p existing)))
+            (setf revisit (union revisit (copy-list (cell-dependents existing))
+                                 :test #'equal)))))
+      ;; capture undo with the SAME name-aware resolution the install loop uses
+      ;; (a raw PARSE-REF would reject a named-cell target and corrupt the undo).
+      (push-undo sheet (capture-cells sheet
+                                      (mapcar (lambda (p)
+                                                (resolve-ref-in sheet (first p)))
+                                              bindings)))
+      (let* ((time (funcall *audit-clock*))    ; one timestamp for the whole batch
+             (refs (loop for (designator formula) in bindings
+                         for ref = (resolve-ref-in sheet designator)
+                         for cell = (ensure-cell sheet ref)
+                         do (note-set cell sheet ref formula *actor* time)
+                            (setf (cell-formula cell) formula)
+                         collect ref)))
+        (cond
+          (*deferred*                          ; inside a transaction: defer recompute
+           (dolist (r refs) (setf (gethash r *deferred*) t))
+           (dolist (r revisit) (setf (gethash r *deferred*) t))
+           (mapcar (lambda (r) (declare (ignore r)) nil) refs))
+          (t
+           (recompute-closure sheet (append refs revisit))
+           (mapcar (lambda (r) (get-value sheet r)) refs)))))))
 
 (defun clear-cell (sheet designator)
   "Empty a cell and recompute its dependents (which will now error if

@@ -605,7 +605,11 @@ non-async/missing cell."
         (setf (cell-value cell) value
               (cell-err cell) nil
               (async-pending cell) nil)
-        (recompute-closure sheet (cell-dependents cell)))))
+        ;; Seed the async cell itself, not just its dependents, so its own
+        ;; CELL-SWEPT hooks (OBSERVE, logged/stats/... mixins) fire for the
+        ;; delivered value — matching SET-ASYNC's initial recompute. Its stored
+        ;; value was set directly, so it won't be recomputed, only swept.
+        (recompute-closure sheet (cons ref (cell-dependents cell))))))
   (values))
 
 (defun deliver-error-async (sheet designator error &optional epoch)
@@ -626,6 +630,11 @@ like DELIVER-ASYNC. No-op for a non-async/missing cell."
                                        :format-arguments (list error))))
               (cell-value cell) nil
               (async-pending cell) nil)
+        ;; Only the dependents are seeded here (not the cell itself): the sweep
+        ;; skips CELL-SWEPT for errored cells anyway, and seeding an errored async
+        ;; cell would make COMPUTE-CELL recompute it and clear the just-stored
+        ;; error. (DELIVER-ASYNC seeds the cell because a *successful* delivery
+        ;; must fire the cell's own sweep hooks.)
         (recompute-closure sheet (cell-dependents cell)))))
   (values))
 

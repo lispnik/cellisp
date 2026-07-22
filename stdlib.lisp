@@ -57,12 +57,18 @@ errors on (e.g. PLUSP of a string) simply doesn't match, rather than aborting."
             (flatten-values args)))
 
 (defun sumif (predicate &rest args)
-  "Sum of the numbers in ARGS that satisfy PREDICATE (non-numbers ignored)."
-  (reduce #'+ (remove-if-not predicate (flatten-numbers args)) :initial-value 0))
+  "Sum of the numbers in ARGS that satisfy PREDICATE (non-numbers ignored).
+PREDICATE is applied defensively (as in COUNTIF): a value it errors on — e.g.
+EVENP of a float in a mixed range — simply doesn't match, rather than aborting."
+  (reduce #'+ (remove-if-not (lambda (v) (ignore-errors (funcall predicate v)))
+                             (flatten-numbers args))
+          :initial-value 0))
 
 (defun averageif (predicate &rest args)
-  "Mean of the numbers in ARGS satisfying PREDICATE. SHEET-ERROR if none match."
-  (let ((ns (remove-if-not predicate (flatten-numbers args))))
+  "Mean of the numbers in ARGS satisfying PREDICATE. SHEET-ERROR if none match.
+PREDICATE is applied defensively (see SUMIF/COUNTIF)."
+  (let ((ns (remove-if-not (lambda (v) (ignore-errors (funcall predicate v)))
+                           (flatten-numbers args))))
     (if ns (/ (reduce #'+ ns) (length ns))
         (error 'sheet-error :format-control "AVERAGEIF of no matching numbers"))))
 
