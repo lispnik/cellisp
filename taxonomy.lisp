@@ -397,13 +397,48 @@ runs under a sheet/workbook lock, but distinct sheets (or standalone sheets)
 lock independently, so two threads can request the SAME new combination at once
 and race the global class table. This serializes the definition step only.")
 
+(defparameter *mixin-precedence*
+  '(;; --- COMPUTE-VALUE :around wrappers, OUTERMOST first (order is semantic) ---
+    ;; A superclass earlier in a class's list is more specific, so its :around
+    ;; runs outermost and calls inward via CALL-NEXT-METHOD.
+    cached-mixin ttl-cached-mixin  ; memoization: a hit short-circuits the rest
+    default-mixin                  ; fallback on ANY error below — including a
+                                   ; validation failure (intentional "soft
+                                   ; validation"); so it is OUTER of validated
+    validated-mixin                ; reject bad values — OUTER of transformed, so
+                                   ; it validates the FINAL (transformed) value
+    transformed-mixin              ; shape the produced value
+    retry-mixin                    ; retry the underlying compute on transient error
+    timed-mixin                    ; profile the compute (INNER of retry, so it
+                                   ; counts only settled computes)
+    ;; --- wrappers of OTHER generics: their relative order is not semantically
+    ;; --- significant (CELL-WRITABLE-P ANDs; the :after sinks are independent),
+    ;; --- fixed here only so a given mixin set maps to exactly one class ---
+    readonly-mixin append-only-mixin typed-input-mixin        ; cell-writable-p
+    observable-mixin logged-mixin stats-mixin persisted-mixin ; cell-swept :after
+    threshold-mixin debounced-mixin throttled-mixin
+    versioned-mixin audited-mixin)                            ; note-set :after
+  "The canonical superclass order for COMBINED-CLASS, most-specific (outermost
+:around) first. Making it explicit — rather than the old sort-by-class-name,
+whose layering was an accident of naming — pins the value-pipeline semantics
+(cache ▸ default ▸ validate ▸ transform ▸ retry ▸ timed) and keeps a new mixin
+from silently reordering the stack. See the COMPUTE-VALUE :around methods.")
+
 (defun combined-class (base mixins)
   "Find, or lazily define and memoize, the concrete class combining
 value-source class BASE with the *set* MIXINS (class names). With no mixins,
-returns BASE itself. Mixins are sorted by name, so any permutation of the same
+returns BASE itself. Mixins are ordered by *MIXIN-PRECEDENCE* (ties, and any
+mixin not listed there, fall back to name order), so any permutation of the same
 set maps to a single class — combinations of any arity are supported."
   (let ((mix (sort (remove-duplicates (copy-list mixins))
-                   #'string< :key #'symbol-name)))
+                   (lambda (a b)
+                     (let ((ra (or (position a *mixin-precedence* :test #'eq)
+                                   most-positive-fixnum))
+                           (rb (or (position b *mixin-precedence* :test #'eq)
+                                   most-positive-fixnum)))
+                       (if (= ra rb)
+                           (string< (symbol-name a) (symbol-name b))
+                           (< ra rb)))))))
     (if (null mix)
         (find-class base)
         (let* ((name (intern (format nil "~{~A+~}~A" mix base) :cellisp))

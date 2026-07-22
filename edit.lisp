@@ -100,6 +100,39 @@ if either corner was deleted, else keeps its shifted corners."
              table)
     new))
 
+(defun shift-spills (table shift-fn)
+  "Shift a spills registry (anchor-ref -> (rows . cols)) under a structural edit.
+Unlike a plain registry shift, the EXTENT is recomputed, not just moved: a row or
+column inserted or deleted *inside* a spill changes the rectangle its cells
+occupy, so the recorded (rows . cols) must track the new bounding box or RESPILL
+would clear the wrong region and orphan a displaced cell. Each spill's cells are
+run through SHIFT-FN and the extent is set to their bounding box relative to the
+shifted anchor. A spill whose anchor is deleted is dropped."
+  (let ((new (make-hash-table :test 'equal)))
+    (maphash
+     (lambda (anchor extent)
+       (let ((nanchor (funcall shift-fn anchor)))
+         (unless (eq nanchor :deleted)
+           (let ((r0 (ref-row anchor)) (c0 (ref-col anchor))
+                 (maxr nil) (maxc nil))
+             (loop for i from 0 below (car extent) do
+               (loop for j from 0 below (cdr extent)
+                     for nref = (funcall shift-fn (make-ref (+ r0 i) (+ c0 j)))
+                     unless (eq nref :deleted) do
+                       (when (or (null maxr) (> (ref-row nref) maxr))
+                         (setf maxr (ref-row nref)))
+                       (when (or (null maxc) (> (ref-col nref) maxc))
+                         (setf maxc (ref-col nref)))))
+             ;; the anchor stays the top-left of the block under any single
+             ;; row/column insert or delete, so extent = (maxrow,maxcol) relative
+             ;; to the shifted anchor.
+             (when maxr
+               (setf (gethash nanchor new)
+                     (cons (1+ (- maxr (ref-row nanchor)))
+                           (1+ (- maxc (ref-col nanchor))))))))))
+     table)
+    new))
+
 (defun structural-edit (sheet shift-fn)
   "Apply SHIFT-FN (a ref -> ref-or-:deleted map) to SHEET: rewrite static refs
 in every formula, move cells to their shifted keys (dropping deleted ones),
@@ -127,8 +160,10 @@ values via RECALC-ALL."
             (sheet-notes sheet)     (shift-registry (sheet-notes sheet) shift-fn)
             ;; merges shift both corners; a merge whose edge is deleted is dropped
             (sheet-merges sheet)    (shift-merges (sheet-merges sheet) shift-fn)
-            ;; spill anchors follow their cell (dropped if the anchor is deleted)
-            (sheet-spills sheet)    (shift-registry (sheet-spills sheet) shift-fn))
+            ;; spill anchors follow their cell AND the extent is recomputed, so a
+            ;; row/column change inside a spill doesn't leave RESPILL clearing the
+            ;; wrong rectangle (dropped if the anchor is deleted)
+            (sheet-spills sheet)    (shift-spills (sheet-spills sheet) shift-fn))
       (recalc-all sheet)))
   (values))
 

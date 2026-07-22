@@ -2179,6 +2179,37 @@ the invariant always held."
       (mapc #'bt:join-thread threads))
     (check (every (lambda (c) (eq c (svref classes 0))) classes) t))
 
+  ;; A structural edit inside a spill must update its recorded EXTENT, not just
+  ;; the anchor, so a later RESPILL clears the whole region (no orphaned cell).
+  (let ((s (make-sheet)))
+    (spill s "A1" '(list 10 20 30))                  ; A1..A3, extent (3 . 1)
+    (insert-row s 2)                                 ; A2/A3 -> A3/A4; blank A2
+    (check (get-value s "A4") 30)                    ; displaced spilled cell survives
+    (respill s "A1" '(list 7 8))                    ; shrink to A1,A2
+    (check (get-value s "A1") 7)
+    (check (get-value s "A2") 8)
+    (check (get-value s "A3") nil)                   ; old leftovers cleared...
+    (check (get-value s "A4") nil))                  ; ...not orphaned
+  (let ((s (make-sheet)))
+    (spill s "A1" '(list 10 20 30))                  ; A1..A3
+    (delete-row s 2)                                 ; drop A2; A3 -> A2; extent (2 . 1)
+    (check (get-value s "A2") 30)
+    (respill s "A1" '(list 5))                      ; shrink to A1 only
+    (check (get-value s "A1") 5)
+    (check (get-value s "A2") nil))                  ; A2 (in old extent) cleared
+
+  ;; Mixin layering is by explicit precedence, not class-name order: validated is
+  ;; OUTER of transformed, so validation sees the TRANSFORMED value (a value the
+  ;; transform brings into range passes). (default-over-validated "soft
+  ;; validation" and retry-over-timed are covered by their own tests above.)
+  (let ((s (make-sheet)))
+    (set-transform s "A2" (lambda (v) (min 100 v)))  ; clamp to <= 100
+    (set-validator s "A2" (lambda (v) (<= v 100)))   ; require <= 100
+    (set-cell s "A1" 150)
+    (set-cell s "A2" '(cell "A1"))                    ; 150 -> 100 -> valid
+    (check (get-value s "A2") 100)
+    (check (nth-value 1 (get-value s "A2")) nil))     ; no INVALID-VALUE
+
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Test failures: ~D" *fails*))
   t)

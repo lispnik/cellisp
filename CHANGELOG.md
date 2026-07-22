@@ -20,6 +20,19 @@ All notable changes to Cellisp are documented here. The format follows
   duplicate pool whose worker threads leak nor corrupt the global class table.
 
 ### Fixed
+- **Spill extent survives structural edits.** A row or column inserted or
+  deleted *inside* a spill now updates the spill's recorded `(rows . cols)`
+  extent (to the new bounding box), not just its anchor. Previously the extent
+  was left stale, so a later `respill` cleared the wrong rectangle and orphaned
+  a displaced spilled cell.
+- **Mixin layer order is explicit, not alphabetical.** Combined cell classes are
+  now ordered by an explicit `*mixin-precedence*` (cache ▸ default ▸ validate ▸
+  transform ▸ retry ▸ timed) instead of by class name, so the value-pipeline
+  semantics are a documented decision and a newly-added mixin can't silently
+  reorder the `:around` stack. As part of this, `validated` now wraps
+  `transformed` (it validates the *transformed* value, not the raw one); the
+  intentional `default`-over-`validated` "soft validation" and `retry`-over-
+  `timed` orderings are preserved.
 - **Stale error across an existence transition.** Assigning a previously
   unreferenced/placeholder cell a value equal to its placeholder default (e.g.
   `nil`) now refreshes dependents that had errored on the cell's absence, instead
