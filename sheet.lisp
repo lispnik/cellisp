@@ -105,6 +105,13 @@ Rendered as #NUM!."))
   ;; Cross-sheet producer side: local-ref -> list of consumer grefs (sheet . ref)
   ;; in OTHER sheets that read this cell. Seeds cross-sheet propagation.
   (foreign-dependents (make-hash-table :test 'equal) :type hash-table)
+  ;; Whole-column/row producer side: a column index -> the set of refs whose
+  ;; formulas read that whole column (via COL/"A:A"), and likewise for rows.
+  ;; Each set is a hash-table used as a ref-set. This is the coarse reverse
+  ;; index that lets a change anywhere in column A re-fire A's readers in O(1)
+  ;; without an edge per cell (cf. FOREIGN-DEPENDENTS). Rebuilt by RECALC-ALL.
+  (col-watchers (make-hash-table :test 'eql) :type hash-table)
+  (row-watchers (make-hash-table :test 'eql) :type hash-table)
   ;; Optional callback invoked after each recompute sweep with the sorted list
   ;; of refs whose value or error changed — the repaint set for a UI. NIL = off.
   ;; Not serialized (a live closure); reattach after LOAD-SHEET.
@@ -200,6 +207,43 @@ registry — any kind of cell can be volatile."
   (if volatile
       (setf (gethash ref (sheet-volatiles sheet)) t)
       (remhash ref (sheet-volatiles sheet))))
+
+;;; Whole-column/row watcher index — the coarse producer-side reverse map for
+;;; span (COL/ROW/"A:A") dependencies. AXIS is :COL or :ROW; INDEX is a 0-based
+;;; column or row index; each entry is a hash-set of the reader refs.
+
+(defun %watchers-table (sheet axis)
+  (ecase axis
+    (:col (sheet-col-watchers sheet))
+    (:row (sheet-row-watchers sheet))))
+
+(defun watchers-of (sheet axis index)
+  "List of reader refs whose formulas read the whole AXIS line INDEX (empty when
+none) — the coarse dependents seeded when a cell on that line changes."
+  (let ((set (gethash index (%watchers-table sheet axis))))
+    (and set (loop for r being the hash-keys of set collect r))))
+
+(defun add-watcher (sheet axis index ref)
+  "Register REF as a whole-line reader of AXIS line INDEX."
+  (let* ((table (%watchers-table sheet axis))
+         (set (or (gethash index table)
+                  (setf (gethash index table) (make-hash-table :test 'equal)))))
+    (setf (gethash ref set) t)))
+
+(defun remove-watcher (sheet axis index ref)
+  "Unregister REF as a reader of AXIS line INDEX, dropping the line's set when it
+empties."
+  (let ((set (gethash index (%watchers-table sheet axis))))
+    (when set
+      (remhash ref set)
+      (when (zerop (hash-table-count set))
+        (remhash index (%watchers-table sheet axis))))))
+
+(defun clear-watchers (sheet)
+  "Drop every whole-column/row watcher — used before a structural edit rebuilds
+the graph from scratch via RECALC-ALL."
+  (clrhash (sheet-col-watchers sheet))
+  (clrhash (sheet-row-watchers sheet)))
 
 (defun %name-key (name) (string-upcase (string name)))
 

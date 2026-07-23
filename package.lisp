@@ -65,6 +65,7 @@
    #:cyclic-reference-cells #:cell-eval-error-original
    ;; formula helpers usable inside formulas
    #:cell #:cells #:sum #:average #:cnt
+   #:col #:row                                ; whole-column / whole-row reads
    ;; formula standard library (stdlib.lisp)
    #:minimum #:maximum #:product #:median
    #:countif #:sumif #:averageif #:safe-cells

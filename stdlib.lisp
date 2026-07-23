@@ -79,17 +79,23 @@ PREDICATE is applied defensively (see SUMIF/COUNTIF)."
 error contributes nothing (is omitted) instead of aborting the read. So an
 aggregate over a sparse or partly-broken range works — (sum (safe-cells \"A1\"
 \"A100\")) sums whatever numbers are there. Every cell's dependency is still
-recorded, so filling or fixing one re-triggers recompute."
-  (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
-    (let ((out '()))
-      (loop for r from r0 to r1 do
-        (loop for c from c0 to c1
-              for ref = (make-ref r c)
-              ;; read-cell-value records the precedent before it can signal, so
-              ;; the dependency stands even when the read errors or is blank.
-              for v = (ignore-errors (read-cell-value target ref))
-              do (when v (push v out))))
-      (nreverse out))))
+recorded, so filling or fixing one re-triggers recompute.
+
+A single colon-string argument names a whole column/row — (safe-cells \"A:A\") —
+read as a SPAN (one coarse dependency), skipping empty and errored cells."
+  (let ((span (and (null bottom-right) (%parse-span top-left))))
+    (if span
+        (read-span *sheet* span t)      ; t = tolerant: skip errored cells
+        (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
+          (let ((out '()))
+            (loop for r from r0 to r1 do
+              (loop for c from c0 to c1
+                    for ref = (make-ref r c)
+                    ;; read-cell-value records the precedent before it can signal,
+                    ;; so the dependency stands even when the read errors or blanks.
+                    for v = (ignore-errors (read-cell-value target ref))
+                    do (when v (push v out))))
+            (nreverse out))))))
 
 ;;; --- sort / filter / unique (spreadsheet dynamic-array helpers) ------
 

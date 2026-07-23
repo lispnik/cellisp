@@ -79,6 +79,35 @@
     (format nil "~A~D" (index->col-letters (ref-col r)) (1+ (ref-row r)))))
 
 ;;;; ------------------------------------------------------------------
+;;;; Spans — whole-column / whole-row references
+;;;;
+;;;; A SPAN names an entire column (or band of columns), or an entire row (band
+;;;; of rows): AXIS is :COL or :ROW and LO/HI are inclusive 0-based indices on
+;;;; that axis (columns for :COL, rows for :ROW). Unlike a finite (tl . br)
+;;;; range, a span is unbounded on the *other* axis — "all of column A" — so it
+;;;; depends on the column as a whole (see COL-WATCHERS / ROW-WATCHERS in
+;;;; sheet.lisp) rather than on individual cells.
+;;;;
+;;;; Represented as the EQUAL-comparable tagged list (AXIS LO HI), matching the
+;;;; cons-based style of REF/range so spans work as hash-table keys and MEMBER
+;;;; items without a custom equality.
+;;;; ------------------------------------------------------------------
+
+(declaim (inline make-span span-axis span-lo span-hi))
+(defun make-span (axis lo hi) (list axis lo hi))
+(defun span-axis (s) (first s))
+(defun span-lo (s) (second s))
+(defun span-hi (s) (third s))
+
+(defun span-p (x)
+  "True if X is a span — an (AXIS LO HI) list with AXIS :COL or :ROW."
+  (and (consp x) (member (car x) '(:col :row)) t))
+
+(defun span-covers-p (span axis index)
+  "True if SPAN is on AXIS and its LO..HI range includes INDEX."
+  (and (eq (span-axis span) axis) (<= (span-lo span) index (span-hi span))))
+
+;;;; ------------------------------------------------------------------
 ;;;; Cell
 ;;;; ------------------------------------------------------------------
 
@@ -92,6 +121,11 @@
    ;; Refs this cell reads (its precedents) and refs that read it (dependents).
    (precedents :initform '() :accessor cell-precedents :type list)
    (dependents :initform '() :accessor cell-dependents :type list)
+   ;; Whole-column/row precedents: SPANs this cell reads (via COL/ROW/"A:A").
+   ;; The consumer side lives here; the producer side is the sheet's
+   ;; COL-WATCHERS / ROW-WATCHERS reverse index. A span read records ONE entry
+   ;; per column/row spanned instead of one edge per cell.
+   (range-precedents :initform '() :accessor cell-range-precedents :type list)
    ;; Cross-sheet precedents: cells this one reads in OTHER sheets, as a list of
    ;; grefs (sheet . ref). The producer side is tracked on the sheet's
    ;; FOREIGN-DEPENDENTS table. Empty for a standalone (non-workbook) sheet.

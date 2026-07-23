@@ -39,19 +39,102 @@ quoted symbol (QUOTE SYM)."
   (format nil "~:[~;$~]~A~:[~;$~]~D"
           col-abs (index->col-letters col) row-abs (1+ row)))
 
-(defun map-formula-refs (form fn)
+;;; Span (whole-column/row) shifting, for structural edits. COL-FN / ROW-FN map a
+;;; 0-based axis index to a new index or :DELETED. A band [lo,hi] is reshaped
+;;; Excel-faithfully by %SHIFT-BAND: it shrinks (or, on an interior insert, grows)
+;;; to cover the surviving lines, and becomes #REF! only when EVERY line in it is
+;;; deleted — deleting one endpoint of A:C yields A:B, not #REF!.
+
+(defun %col-literal-p (x) (ref-literal-p x))          ; a column letter: "A" / 'A
+(defun %row-literal-p (x)                             ; a 1-based row number
+  (or (integerp x)
+      (and (stringp x) (plusp (length x)) (every #'digit-char-p x))))
+
+(defun %shift-band (lo hi fn)
+  "Reshape the inclusive band [LO,HI] under axis shift FN (index -> index-or
+-:deleted): return (values NEW-LO NEW-HI) covering the surviving lines — an
+endpoint on a deleted line clamps inward to the nearest survivor — or :DELETED
+when nothing in the band survives. FN is monotonic, so scanning in from each end
+finds the new bounds; this yields Excel's semantics for both delete (shrink) and
+interior insert (grow)."
+  (let ((new-lo (loop for i from lo to hi
+                      for s = (funcall fn i) unless (eq s :deleted) return s))
+        (new-hi (loop for i from hi downto lo
+                      for s = (funcall fn i) unless (eq s :deleted) return s)))
+    (if (or (null new-lo) (null new-hi))
+        :deleted
+        (values (min new-lo new-hi) (max new-lo new-hi)))))
+
+(defun %shift-col-form (args col-fn)
+  "Reshape a (col …) form's literal column-letter ARGS as a band: the new arg list
+of letters, collapsed to one arg when a single column, or (\"#REF!\") when the band
+is wholly deleted. An unparseable arg leaves ARGS unchanged."
+  (handler-case
+      (let* ((idxs (mapcar (lambda (a) (let ((s (literal->string a)))
+                                         (col-letters->index s 0 (length s))))
+                           args))
+             (lo (reduce #'min idxs)) (hi (reduce #'max idxs)))
+        (multiple-value-bind (nlo nhi) (%shift-band lo hi col-fn)
+          (cond ((eq nlo :deleted) (list "#REF!"))
+                ((eql nlo nhi) (list (index->col-letters nlo)))
+                (t (list (index->col-letters nlo) (index->col-letters nhi))))))
+    (error () args)))
+
+(defun %shift-row-form (args row-fn)
+  "Row counterpart of %SHIFT-COL-FORM: reshape a (row …) form's 1-based row-number
+ARGS as a band, returning new 1-based numbers (or (\"#REF!\") when wholly deleted)."
+  (handler-case
+      (let* ((idxs (mapcar (lambda (a) (1- (if (integerp a) a (parse-integer (string a)))))
+                           args))
+             (lo (reduce #'min idxs)) (hi (reduce #'max idxs)))
+        (multiple-value-bind (nlo nhi) (%shift-band lo hi row-fn)
+          (cond ((eq nlo :deleted) (list "#REF!"))
+                ((eql nlo nhi) (list (1+ nlo)))
+                (t (list (1+ nlo) (1+ nhi))))))
+    (error () args)))
+
+(defun shift-span-string (s col-fn row-fn)
+  "Reshape a colon span string — \"A:C\" (columns via COL-FN) or \"2:5\" (rows via
+ROW-FN) — Excel-faithfully, preserving the colon form; \"#REF!\" only when the whole
+band is deleted. A non-span S is left unchanged."
+  (let ((span (%parse-span s)))
+    (if (null span)
+        s
+        (let ((colp (eq (span-axis span) :col)))
+          (multiple-value-bind (nlo nhi)
+              (%shift-band (span-lo span) (span-hi span) (if colp col-fn row-fn))
+            (cond ((eq nlo :deleted) "#REF!")
+                  (colp (format nil "~A:~A" (index->col-letters nlo) (index->col-letters nhi)))
+                  (t    (format nil "~D:~D" (1+ nlo) (1+ nhi)))))))))
+
+(defun map-formula-refs (form fn &key col-fn row-fn)
   "Return FORM with each literal ref designator of CELL/CELLS forms replaced by
-(funcall FN ref-string), a new ref string. Computed refs are left as-is."
+(funcall FN ref-string), a new ref string. When COL-FN / ROW-FN (index ->
+index-or-:deleted) are supplied, also structurally shift whole-column/row spans:
+the column-letter args of (COL …), the row-number args of (ROW …), and a one-arg
+(CELLS \"A:A\") colon string. Computed (non-literal) refs/spans are left as-is."
   (labels ((rw (form)
              (cond
                ((atom form) form)
                ((and (eq (car form) 'cell) (= (length form) 2)
                      (ref-literal-p (second form)))
                 (list 'cell (funcall fn (literal->string (second form)))))
+               ;; one-arg (cells "A:A") whole-column/row span
+               ((and col-fn (eq (car form) 'cells) (= (length form) 2)
+                     (stringp (second form)) (%parse-span (second form)))
+                (list 'cells (shift-span-string (second form) col-fn row-fn)))
                ((and (eq (car form) 'cells) (= (length form) 3)
                      (ref-literal-p (second form)) (ref-literal-p (third form)))
                 (list 'cells (funcall fn (literal->string (second form)))
                              (funcall fn (literal->string (third form)))))
+               ;; (col "A") / (col "A" "C") — shifted as one band
+               ((and col-fn (eq (car form) 'col) (member (length form) '(2 3))
+                     (every #'%col-literal-p (rest form)))
+                (cons 'col (%shift-col-form (rest form) col-fn)))
+               ;; (row 5) / (row 2 5) — shifted as one band
+               ((and row-fn (eq (car form) 'row) (member (length form) '(2 3))
+                     (every #'%row-literal-p (rest form)))
+                (cons 'row (%shift-row-form (rest form) row-fn)))
                (t (mapcar #'rw form)))))
     (rw form)))
 
@@ -133,11 +216,13 @@ shifted anchor. A spill whose anchor is deleted is dropped."
      table)
     new))
 
-(defun structural-edit (sheet shift-fn)
+(defun structural-edit (sheet shift-fn &key (col-shift #'identity) (row-shift #'identity))
   "Apply SHIFT-FN (a ref -> ref-or-:deleted map) to SHEET: rewrite static refs
 in every formula, move cells to their shifted keys (dropping deleted ones),
 shift the volatile/frozen registries, then rebuild the dependency graph and
-values via RECALC-ALL."
+values via RECALC-ALL. COL-SHIFT / ROW-SHIFT (index -> index-or-:deleted) shift
+the axis of whole-column/row spans in formulas — identity for the unaffected
+axis (a row edit leaves columns alone, and vice versa)."
   (with-sheet-lock (sheet)
     (let ((new (make-hash-table :test 'equal)))
       (maphash (lambda (ref cell)
@@ -145,10 +230,12 @@ values via RECALC-ALL."
                    (unless (eq nref :deleted)
                      (setf (cell-formula cell)
                            (map-formula-refs (cell-formula cell)
-                                             (lambda (s) (shift-ref-string s shift-fn)))
+                                             (lambda (s) (shift-ref-string s shift-fn))
+                                             :col-fn col-shift :row-fn row-shift)
                            ;; links are stale after the move; rebuilt by recalc
                            (cell-precedents cell) '()
-                           (cell-dependents cell) '())
+                           (cell-dependents cell) '()
+                           (cell-range-precedents cell) '())
                      (setf (gethash nref new) cell))))
                (sheet-cells sheet))
       (setf (sheet-cells sheet) new
@@ -164,6 +251,9 @@ values via RECALC-ALL."
             ;; row/column change inside a spill doesn't leave RESPILL clearing the
             ;; wrong rectangle (dropped if the anchor is deleted)
             (sheet-spills sheet)    (shift-spills (sheet-spills sheet) shift-fn))
+      ;; watcher index is stale after the move; RECALC-ALL rebuilds it as every
+      ;; formula re-registers its (now-shifted) spans.
+      (clear-watchers sheet)
       (recalc-all sheet)))
   (values))
 
@@ -171,41 +261,49 @@ values via RECALC-ALL."
   "Insert a blank row before 1-based ROW; cells at or below shift down one and
 references adjust."
   (let ((r (1- row)))
-    (structural-edit sheet
-      (lambda (ref) (if (>= (ref-row ref) r)
-                        (make-ref (1+ (ref-row ref)) (ref-col ref))
-                        ref)))))
+    (flet ((rowsh (rr) (if (>= rr r) (1+ rr) rr)))
+      (structural-edit sheet
+        (lambda (ref) (if (>= (ref-row ref) r)
+                          (make-ref (1+ (ref-row ref)) (ref-col ref))
+                          ref))
+        :row-shift #'rowsh))))
 
 (defun delete-row (sheet row)
   "Delete 1-based ROW; cells below shift up one, and references to the deleted
 row become #REF!."
   (let ((r (1- row)))
-    (structural-edit sheet
-      (lambda (ref)
-        (let ((rr (ref-row ref)))
-          (cond ((= rr r) :deleted)
-                ((> rr r) (make-ref (1- rr) (ref-col ref)))
-                (t ref)))))))
+    (flet ((rowsh (rr) (cond ((= rr r) :deleted) ((> rr r) (1- rr)) (t rr))))
+      (structural-edit sheet
+        (lambda (ref)
+          (let ((rr (ref-row ref)))
+            (cond ((= rr r) :deleted)
+                  ((> rr r) (make-ref (1- rr) (ref-col ref)))
+                  (t ref))))
+        :row-shift #'rowsh))))
 
 (defun insert-column (sheet col)
   "Insert a blank column before 1-based COL (column A is 1); cells at or to the
 right shift over one and references adjust."
   (let ((c (1- col)))
-    (structural-edit sheet
-      (lambda (ref) (if (>= (ref-col ref) c)
-                        (make-ref (ref-row ref) (1+ (ref-col ref)))
-                        ref)))))
+    (flet ((colsh (cc) (if (>= cc c) (1+ cc) cc)))
+      (structural-edit sheet
+        (lambda (ref) (if (>= (ref-col ref) c)
+                          (make-ref (ref-row ref) (1+ (ref-col ref)))
+                          ref))
+        :col-shift #'colsh))))
 
 (defun delete-column (sheet col)
   "Delete 1-based COL; cells to the right shift left one, and references to the
 deleted column become #REF!."
   (let ((c (1- col)))
-    (structural-edit sheet
-      (lambda (ref)
-        (let ((cc (ref-col ref)))
-          (cond ((= cc c) :deleted)
-                ((> cc c) (make-ref (ref-row ref) (1- cc)))
-                (t ref)))))))
+    (flet ((colsh (cc) (cond ((= cc c) :deleted) ((> cc c) (1- cc)) (t cc))))
+      (structural-edit sheet
+        (lambda (ref)
+          (let ((cc (ref-col ref)))
+            (cond ((= cc c) :deleted)
+                  ((> cc c) (make-ref (ref-row ref) (1- cc)))
+                  (t ref))))
+        :col-shift #'colsh))))
 
 ;;;; ------------------------------------------------------------------
 ;;;; Copy / paste with relative and absolute ($) references

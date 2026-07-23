@@ -2269,6 +2269,118 @@ full RECALC-ALL. Returns T iff the invariant always held."
     (form->sheet (list :cellisp-sheet :version (+ 1 cellisp::*serialization-version*)
                        :cells '())))
 
+  ;; ---- whole-column / whole-row references (COL/ROW/"A:A" spans) ---------
+  ;; read via both surfaces; record a coarse span dependency (no per-cell edge);
+  ;; see value + membership changes anywhere on the column/row.
+  (let ((s (make-sheet)))
+    (dotimes (i 4) (set-cell s (cellisp::make-ref i 0) (1+ i)))   ; A1..A4 = 1,2,3,4
+    (set-cell s (cellisp::make-ref 0 1) 10)                       ; B1 = 10
+    (set-cell s "C1" '(sum (col "A")))
+    (set-cell s "C2" '(sum (cells "A:A")))               ; Excel colon surface
+    (set-cell s "C3" '(average (col "A")))
+    (set-cell s "C4" '(sum (col "A" "B")))               ; band A..B
+    (check (get-value s "C1") 10)
+    (check (get-value s "C2") 10)                        ; same via "A:A"
+    (check (get-value s "C3") 5/2)
+    (check (get-value s "C4") 20)                        ; +B1
+    ;; efficiency: a whole-column reader records NO per-cell precedents, only a
+    ;; single watcher entry on column A.
+    (check (precedents s "C1") '())
+    (check (and (member (parse-ref "C1") (cellisp::watchers-of s :col 0)
+                        :test #'equal) t) t)
+    ;; invalidation — value change on an existing cell in the column
+    (set-cell s (cellisp::make-ref 1 0) 40)                       ; A2 1->40 => col A = 48
+    (check (get-value s "C1") 48)
+    ;; membership — a previously-EMPTY cell added to the column re-fires it
+    (set-cell s (cellisp::make-ref 8 0) 100)                      ; A9 was empty
+    (check (get-value s "C1") 148)
+    ;; and clearing that cell re-fires too
+    (clear-cell s (cellisp::make-ref 8 0))
+    (check (get-value s "C1") 48))
+
+  ;; whole-row read (reader kept off the row it reads, to avoid self-reference)
+  (let ((s (make-sheet)))
+    (dotimes (j 3) (set-cell s (cellisp::make-ref 0 j) (* 10 (1+ j))))  ; row 1 = 10,20,30
+    (set-cell s "A5" '(sum (row 1)))
+    (set-cell s "B5" '(sum (cells "1:1")))
+    (check (get-value s "A5") 60)
+    (check (get-value s "B5") 60))
+
+  ;; a whole-column reader is NOT recomputed by an edit outside its column
+  (let ((s (make-sheet)))
+    (dotimes (i 3) (set-cell s (cellisp::make-ref i 0) (1+ i)))
+    (set-cell s "C1" '(progn (incf *evals*) (sum (col "A"))))
+    (set-cell s "Z9" 1)
+    (setf *evals* 0)
+    (set-cell s "Z8" 2)                                  ; unrelated column
+    (check *evals* 0)                                    ; reader untouched
+    (set-cell s (cellisp::make-ref 0 0) 100)                      ; touches column A
+    (check (> *evals* 0) t))
+
+  ;; structural edits shift both surfaces, axis-aware
+  (let ((s (make-sheet)))
+    (dotimes (i 3) (set-cell s (cellisp::make-ref i 0) (1+ i)))   ; A1..A3 = 1,2,3
+    (set-cell s "C1" '(sum (col "A")))
+    (set-cell s "C2" '(sum (cells "A:A")))
+    (insert-column s 1)                                  ; A->B; C->D
+    (check (get-formula s "D1") '(sum (col "B")))
+    (check (get-formula s "D2") '(sum (cells "B:B")))
+    (check (get-value s "D1") 6))
+  (let ((s (make-sheet)))
+    (dotimes (j 3) (set-cell s (cellisp::make-ref 1 j) (* 10 (1+ j)))) ; row 2 = 10,20,30
+    (set-cell s "E1" '(sum (row 2)))
+    (set-cell s "F1" '(sum (cells "2:2")))
+    (insert-row s 1)                                     ; row 2 -> row 3
+    (check (get-formula s "E2") '(sum (row 3)))
+    (check (get-formula s "F2") '(sum (cells "3:3")))
+    (check (get-value s "E2") 60))
+  ;; deleting the referenced column makes the whole-column ref #REF!
+  (let ((s (make-sheet)))
+    (dotimes (i 3) (set-cell s (cellisp::make-ref i 0) (1+ i)))
+    (set-cell s "C1" '(sum (col "A")))
+    (delete-column s 1)                                  ; delete col A
+    (check (and (typep (nth-value 1 (get-value s "B1")) 'bad-reference) t) t))
+
+  ;; band references are Excel-faithful under structural edits: deleting an
+  ;; endpoint (or interior) line SHRINKS the band; an interior insert GROWS it;
+  ;; only a wholly-deleted band becomes #REF!.
+  (let ((s (make-sheet)))
+    (dotimes (c 3) (set-cell s (cons 0 c) (* 10 (1+ c))))  ; A1,B1,C1 = 10,20,30
+    (set-cell s "E1" '(sum (col "A" "C")))               ; band A..C = 60
+    (check (get-value s "E1") 60)
+    (delete-column s 1)                                  ; delete ENDPOINT col A
+    (check (get-formula s "D1") '(sum (col "A" "B")))    ; shrinks, not #REF!
+    (check (get-value s "D1") 50))                       ; 20 + 30 survive
+  (let ((s (make-sheet)))
+    (dotimes (c 3) (set-cell s (cons 0 c) (* 10 (1+ c))))
+    (set-cell s "E1" '(sum (cells "A:C")))
+    (delete-column s 2)                                  ; delete INTERIOR col B
+    (check (get-formula s "D1") '(sum (cells "A:B")))
+    (check (get-value s "D1") 40))                       ; 10 + 30
+  (let ((s (make-sheet)))
+    (set-cell s "E1" '(sum (cells "A:C")))
+    (insert-column s 2)                                  ; insert INSIDE the band
+    (check (get-formula s "F1") '(sum (cells "A:D"))))   ; grows to include it
+  (let ((s (make-sheet)))
+    (set-cell s "E1" '(sum (row 2 4)))
+    (delete-row s 3)                                     ; interior row delete
+    (check (get-formula s "E1") '(sum (row 2 3))))
+
+  ;; a whole-column reader sees a clear/add deferred inside a WITH-TRANSACTION
+  (let ((s (make-sheet)))
+    (dotimes (i 3) (set-cell s (cons i 0) (1+ i)))       ; A1..A3 = 1,2,3
+    (set-cell s "C1" '(sum (col "A")))
+    (with-transaction (s) (clear-cell s (cons 1 0)))     ; clear A2 in a txn
+    (check (get-value s "C1") 4)                          ; 1 + 3
+    (with-transaction (s) (set-cell s (cons 7 0) 100))   ; add A8 in a txn
+    (check (get-value s "C1") 104))
+
+  ;; cycle: a cell reading the very column it lives in errors #CYCLE!, no hang
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 1)
+    (ignore-errors (set-cell s "A2" '(sum (col "A"))))   ; A2 in col A reads col A
+    (check (and (typep (nth-value 1 (get-value s "A2")) 'cyclic-reference) t) t))
+
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Test failures: ~D" *fails*))
   t)

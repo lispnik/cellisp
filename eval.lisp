@@ -23,6 +23,9 @@
   "Refs currently being evaluated, innermost first; for cycle detection.")
 (defvar *collected-precedents* nil
   "When non-nil (a hash-table), CELL/CELLS record the refs they touch.")
+(defvar *collected-ranges* nil
+  "When non-nil (a hash-table keyed EQUAL), COL/ROW/\"A:A\" reads record the SPANs
+they touch — the coarse whole-column/row analog of *COLLECTED-PRECEDENTS*.")
 (defvar *fresh* nil
   "When bound (a hash-table) for the duration of one recompute sweep, holds
 the refs already computed this sweep so each cell is computed at most once.")
@@ -30,6 +33,12 @@ the refs already computed this sweep so each cell is computed at most once.")
   "When bound (a hash-table) for a sweep, COMPUTE-CELL records refs whose
 value/error actually changed — RECOMPUTE-CLOSURE uses this to short-circuit
 recompute of subtrees whose inputs did not change.")
+(defvar *changed-cols* nil
+  "When bound (a hash-table used as an index-set) for a sweep, holds the column
+indices carrying a cell whose value/error changed — so a whole-column reader
+(A:A) recomputes without a per-cell edge. Sibling: *CHANGED-ROWS*.")
+(defvar *changed-rows* nil
+  "Row-index counterpart of *CHANGED-COLS*.")
 (defvar *collected-foreign* nil
   "When bound (a hash-table) during COMPUTE-CELL of a cell in a workbook sheet,
 holds the cross-sheet grefs (sheet . ref) the running formula reads. NIL for a
@@ -58,6 +67,12 @@ deterministic tests.")
 (defun note-precedent (ref)
   (when *collected-precedents*
     (setf (gethash ref *collected-precedents*) t)))
+
+(defun note-range (span)
+  "Record a whole-column/row (SPAN) read by the formula being computed — the
+coarse counterpart of NOTE-PRECEDENT."
+  (when *collected-ranges*
+    (setf (gethash span *collected-ranges*) t)))
 
 (defun note-foreign (target ref)
   "Record a cross-sheet read of TARGET's REF by the formula being computed."
@@ -181,14 +196,115 @@ Empty cells in the rectangle read as NIL (blank), so a range with gaps is fine
 and the numeric aggregates (which ignore non-numbers) sum/average just the values
 present. An existing cell that holds an error still propagates it; use SAFE-CELLS
 to skip errored cells too. (A single-cell read via CELL stays strict — reading an
-empty cell there signals, preserving error propagation.)"
-  (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
-    (let ((out '()))
-      (loop for r from r0 to r1 do
-        (loop for c from c0 to c1
-              for ref = (make-ref r c)
-              do (push (read-cell-blank target ref) out)))
-      (nreverse out))))
+empty cell there signals, preserving error propagation.)
+
+A single colon-string argument may instead name a whole column/row —
+(cells \"A:A\"), (cells \"A:C\"), (cells \"1:1\"), (cells \"2:5\") — read as a
+SPAN (see READ-SPAN): one coarse dependency on the column/row, not per cell."
+  (let ((span (and (null bottom-right) (%parse-span top-left))))
+    (if span
+        (read-span *sheet* span)
+        (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
+          (let ((out '()))
+            (loop for r from r0 to r1 do
+              (loop for c from c0 to c1
+                    for ref = (make-ref r c)
+                    do (push (read-cell-blank target ref) out)))
+            (nreverse out))))))
+
+;;; --- whole-column / whole-row reads (spans) -------------------------
+;;;
+;;; A span read — (col "A"), (row 5), or the colon form (cells "A:A") — depends
+;;; on the column/row as a WHOLE, recording one coarse span dependency
+;;; (NOTE-RANGE) instead of an edge per cell. See cell.lisp SPAN and the
+;;; sheet COL-WATCHERS / ROW-WATCHERS index.
+
+(defun %parse-span (designator)
+  "Parse a whole-column/row span designator into a SPAN, or NIL when DESIGNATOR
+is not a colon span (so callers fall back to ordinary ref/range parsing). A
+column band is letters:letters (\"A:A\", \"A:C\"), a row band is digits:digits
+(\"1:1\", \"2:5\"); a mixed form (\"A:2\") is not a span. Bounds normalize lo<=hi."
+  (when (typep designator '(or string symbol))
+    (let* ((s (string designator))
+           (colon (position #\: s)))
+      (when colon
+        (let ((left (subseq s 0 colon))
+              (right (subseq s (1+ colon))))
+          (flet ((lettersp (x) (and (plusp (length x)) (every #'alpha-char-p x)))
+                 (digitsp  (x) (and (plusp (length x)) (every #'digit-char-p x))))
+            (cond
+              ((and (lettersp left) (lettersp right))
+               (let ((a (col-letters->index left 0 (length left)))
+                     (b (col-letters->index right 0 (length right))))
+                 (make-span :col (min a b) (max a b))))
+              ((and (digitsp left) (digitsp right))
+               (let ((a (1- (parse-integer left)))
+                     (b (1- (parse-integer right))))
+                 (when (or (minusp a) (minusp b))
+                   (error 'bad-reference :format-control "Row must be >= 1 in ~S"
+                                         :format-arguments (list s)))
+                 (make-span :row (min a b) (max a b))))
+              (t nil))))))))
+
+(defun read-cell-raw (sheet ref)
+  "Force REF up to date and return its value WITHOUT recording a per-cell
+precedent — READ-SPAN records a coarse span dependency instead. An existing
+cell's stored error re-signals; an empty cell returns NIL."
+  (if (find-cell sheet ref) (evaluate-ref sheet ref) nil))
+
+(defun read-span (sheet span &optional tolerant)
+  "Read SPAN (a whole column/row) as a flat row-major list of the populated
+cells' values, recording ONE coarse dependency on the span (NOTE-RANGE) rather
+than a per-cell precedent. Enumeration is bounded by the sheet's used range;
+empty cells are skipped. Existing errors propagate unless TOLERANT (then the
+errored cell is skipped, like SAFE-CELLS)."
+  (note-range span)
+  (let ((ur (used-range sheet)))
+    (when ur
+      (destructuring-bind ((minr . minc) maxr . maxc) ur
+        (let ((out '()))
+          (flet ((rd (ref) (if tolerant
+                               (ignore-errors (read-cell-raw sheet ref))
+                               (read-cell-raw sheet ref))))
+            (ecase (span-axis span)
+              (:col
+               (let ((c0 (max minc (span-lo span))) (c1 (min maxc (span-hi span))))
+                 (loop for r from minr to maxr do
+                   (loop for c from c0 to c1
+                         for v = (rd (make-ref r c))
+                         do (when v (push v out))))))
+              (:row
+               (let ((r0 (max minr (span-lo span))) (r1 (min maxr (span-hi span))))
+                 (loop for r from r0 to r1 do
+                   (loop for c from minc to maxc
+                         for v = (rd (make-ref r c))
+                         do (when v (push v out))))))))
+          (nreverse out))))))
+
+(defun col (designator &optional to)
+  "Read a whole column (or band of columns) as a flat list of the populated
+cells' values, top to bottom. DESIGNATOR/TO are column letters: (col \"A\") is
+column A; (col \"A\" \"C\") is columns A..C. Records ONE whole-column dependency,
+not one per cell — so a change anywhere in the column, now or later, re-fires
+this formula."
+  (flet ((idx (x) (let ((s (string x))) (col-letters->index s 0 (length s)))))
+    (let* ((a (idx designator)) (b (and to (idx to)))
+           (lo (if b (min a b) a)) (hi (if b (max a b) a)))
+      (read-span *sheet* (make-span :col lo hi)))))
+
+(defun row (designator &optional to)
+  "Read a whole row (or band of rows) as a flat list of the populated cells'
+values, left to right. DESIGNATOR/TO are 1-based row numbers (an integer or
+numeric string): (row 5) is row 5; (row 2 5) is rows 2..5. Like COL, records one
+whole-row dependency rather than an edge per cell.
+NOTE: this is CELLISP:ROW; REVISION:ROW is an unrelated UI layout macro. Formulas
+are read in the cellisp package, so there is no clash."
+  (flet ((idx (x) (1- (if (integerp x) x (parse-integer (string x))))))
+    (let* ((a (idx designator)) (b (and to (idx to)))
+           (lo (if b (min a b) a)) (hi (if b (max a b) a)))
+      (when (minusp lo)
+        (error 'bad-reference :format-control "Row must be >= 1"))
+      (read-span *sheet* (make-span :row lo hi)))))
 
 ;;; --- aggregates -----------------------------------------------------
 
@@ -334,6 +450,7 @@ cells read by a formula."
     (return-from compute-cell (cell-value cell)))
   (let ((*eval-stack* (cons ref *eval-stack*))
         (*collected-precedents* (make-hash-table :test 'equal))
+        (*collected-ranges* (make-hash-table :test 'equal))
         ;; only a workbook sheet can read across sheets — allocate the foreign
         ;; table only then, so single-sheet compute stays allocation-clean.
         (*collected-foreign* (and (sheet-workbook sheet)
@@ -357,6 +474,8 @@ cells read by a formula."
                (setf (cell-err cell) wrapped (cell-value cell) nil)
                (error wrapped))))
       (update-dependency-links sheet ref cell *collected-precedents*)
+      ;; commit whole-column/row (span) links into the watcher reverse index.
+      (update-range-links sheet ref cell *collected-ranges*)
       ;; commit cross-sheet links too, when this sheet is in a workbook (or had
       ;; foreign links to tear down after leaving one).
       (when (or *collected-foreign* (cell-foreign-precedents cell))
@@ -368,6 +487,10 @@ cells read by a formula."
       (when (not (and (equal old-value (cell-value cell))
                       (eq old-err-p (and (cell-err cell) t))))
         (when *changed* (setf (gethash ref *changed*) t))
+        ;; mark this cell's column and row changed so a whole-column/row reader
+        ;; (A:A) of them recomputes — the coarse counterpart of *CHANGED*.
+        (when *changed-cols* (setf (gethash (ref-col ref) *changed-cols*) t))
+        (when *changed-rows* (setf (gethash (ref-row ref) *changed-rows*) t))
         ;; also record it stickily (global handle) so a later sweep of this sheet
         ;; in the same cross-sheet cascade still sees the change (see *STICKY*).
         (when *sticky* (setf (gethash (cons sheet ref) *sticky*) t))))
@@ -387,6 +510,24 @@ cells read by a formula."
       (let ((c (ensure-cell sheet p)))
         (pushnew ref (cell-dependents c) :test 'equal)))
     (setf (cell-precedents cell) new-precs)))
+
+(defun update-range-links (sheet ref cell new-ranges-table)
+  "Reconcile CELL's whole-column/row (SPAN) precedents against NEW-RANGES-TABLE,
+mirroring UPDATE-DEPENDENCY-LINKS: drop REF from the watcher sets of spans no
+longer read, add it to those now read, and store the new span list on the cell.
+A span touches one watcher entry per column/row it spans — never per cell."
+  (let ((new-spans (loop for s being the hash-keys of new-ranges-table collect s)))
+    (flet ((each-line (span fn)
+             (loop for i from (span-lo span) to (span-hi span)
+                   do (funcall fn (span-axis span) i))))
+      ;; drop watcher entries for spans this cell no longer reads
+      (dolist (old (cell-range-precedents cell))
+        (unless (gethash old new-ranges-table)
+          (each-line old (lambda (axis i) (remove-watcher sheet axis i ref)))))
+      ;; register (idempotent) the spans it now reads
+      (dolist (s new-spans)
+        (each-line s (lambda (axis i) (add-watcher sheet axis i ref)))))
+    (setf (cell-range-precedents cell) new-spans)))
 
 ;;; --- cross-sheet dependency links -----------------------------------
 ;;;

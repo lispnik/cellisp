@@ -221,6 +221,10 @@ they still read it)."
                             (remove ref (cell-dependents c) :test 'equal)))))
           ;; and from any cross-sheet producers we read
           (when (cell-foreign-precedents cell) (detach-foreign sheet ref cell))
+          ;; and drop any whole-column/row watcher entries this cell registered
+          (dolist (span (cell-range-precedents cell))
+            (loop for i from (span-lo span) to (span-hi span)
+                  do (remove-watcher sheet (span-axis span) i ref)))
           (remhash ref (sheet-cells sheet))
           (remhash ref (sheet-volatiles sheet)) ; drop from the volatile registry
           (cond
@@ -228,8 +232,9 @@ they still read it)."
              (dolist (d deps) (setf (gethash d *deferred*) t))
              (setf (gethash ref *deferred*) t))
             (t
-             ;; the cleared cell won't recompute itself, so report it explicitly.
-             (recompute-closure sheet deps :extra-changed (list ref))))))
+             ;; the cleared cell won't recompute itself, so report it explicitly;
+             ;; seed REF too so its column/row readers (watchers) re-fire.
+             (recompute-closure sheet (cons ref deps) :extra-changed (list ref))))))
       (values))))
 
 (defun get-value (sheet designator)
@@ -271,7 +276,10 @@ they still read it)."
 ;;;; ------------------------------------------------------------------
 
 (defun affected-closure (sheet seeds)
-  "Return SEEDS plus all transitive dependents, as a list of refs."
+  "Return SEEDS plus all transitive dependents, as a list of refs. A whole-column
+/row reader (registered in COL-WATCHERS/ROW-WATCHERS) is pulled in whenever any
+cell on the column/row it reads enters the cone — done even for a cell-less ref,
+so a *cleared* cell still re-fires the readers of its column/row."
   (let ((seen (make-hash-table :test 'equal))
         (order '()))
     (labels ((visit (ref)
@@ -280,25 +288,42 @@ they still read it)."
                  (push ref order)
                  (let ((cell (find-cell sheet ref)))
                    (when cell
-                     (dolist (d (cell-dependents cell)) (visit d)))))))
+                     (dolist (d (cell-dependents cell)) (visit d))))
+                 (dolist (w (watchers-of sheet :col (ref-col ref))) (visit w))
+                 (dolist (w (watchers-of sheet :row (ref-row ref))) (visit w)))))
       (dolist (s seeds) (visit s)))
     order))
 
-(defun topological-order (sheet refs)
+(defun topological-order (sheet refs &optional by-col by-row)
   "Order the cells in REFS so each comes after its precedents that are also in
 REFS (DFS post-order over the precedent edges; back-edges from cycles are left
-in arrival order)."
+in arrival order). A whole-column/row reader has no single-cell precedent edge to
+the column, so it is additionally ordered after the affected cells on the
+column/row it reads — supplied as the BY-COL / BY-ROW buckets (index -> list of
+affected refs) — ensuring those cells settle before the reader recomputes."
   (let ((in-set (make-hash-table :test 'equal))
         (state (make-hash-table :test 'equal))   ; nil | :open | :done
         (order '()))
     (dolist (r refs) (setf (gethash r in-set) t))
-    (labels ((visit (ref)
+    (labels ((span-precs (cell)
+               ;; affected refs on any column/row this cell reads wholesale
+               (let ((acc '()))
+                 (dolist (span (cell-range-precedents cell))
+                   (loop for i from (span-lo span) to (span-hi span)
+                         for bucket = (if (eq (span-axis span) :col)
+                                          (and by-col (gethash i by-col))
+                                          (and by-row (gethash i by-row)))
+                         do (dolist (p bucket) (push p acc))))
+                 acc))
+             (visit (ref)
                (case (gethash ref state)
                  ((:done :open))                  ; done, or a cycle back-edge
                  (t (setf (gethash ref state) :open)
                     (let ((cell (find-cell sheet ref)))
                       (when cell
                         (dolist (p (cell-precedents cell))
+                          (when (gethash p in-set) (visit p)))
+                        (dolist (p (span-precs cell))
                           (when (gethash p in-set) (visit p)))))
                     (setf (gethash ref state) :done)
                     (push ref order)))))
@@ -315,23 +340,60 @@ it), and fires SHEET's change hook with that set, row-major sorted."
   (let* ((*sheet* sheet)
          (*fresh* (make-hash-table :test 'equal))
          (*changed* (make-hash-table :test 'equal))
+         ;; coarse counterparts of *CHANGED* for whole-column/row readers: the
+         ;; column/row indices holding a changed cell this sweep.
+         (*changed-cols* (make-hash-table :test 'eql))
+         (*changed-rows* (make-hash-table :test 'eql))
          (all-seeds (append seeds (volatile-refs sheet)))
          (seed-set (make-hash-table :test 'equal))
-         (ordered (topological-order sheet (affected-closure sheet all-seeds)))
-         (skipped (make-hash-table :test 'equal)))
+         (closure (affected-closure sheet all-seeds))
+         ;; bucket the affected cone by column and row, for the span ordering in
+         ;; TOPOLOGICAL-ORDER and the range-changed check below.
+         (by-col (make-hash-table :test 'eql))
+         (by-row (make-hash-table :test 'eql))
+         (skipped (make-hash-table :test 'equal))
+         (ordered nil))
     (dolist (s all-seeds) (setf (gethash s seed-set) t))
+    ;; a cleared cell (EXTRA-CHANGED) is gone but still changed its column/row,
+    ;; so a whole-column/row reader of it must recompute.
+    (dolist (r extra-changed)
+      (setf (gethash (ref-col r) *changed-cols*) t
+            (gethash (ref-row r) *changed-rows*) t))
+    ;; likewise a seed that has NO cell is a cleared/absent position — mark its
+    ;; column/row changed too. This is how a CLEAR-CELL deferred inside a
+    ;; WITH-TRANSACTION reaches a whole-column reader at commit (the cleared cell
+    ;; arrives only as a cell-less seed, without EXTRA-CHANGED threaded through).
+    (dolist (s all-seeds)
+      (unless (find-cell sheet s)
+        (setf (gethash (ref-col s) *changed-cols*) t
+              (gethash (ref-row s) *changed-rows*) t)))
+    (dolist (ref closure)
+      (push ref (gethash (ref-col ref) by-col))
+      (push ref (gethash (ref-row ref) by-row)))
+    (setf ordered (topological-order sheet closure by-col by-row))
     (flet ((precedent-changed-p (p)
              ;; changed this sweep, or (in a cross-sheet cascade) stickily at any
              ;; earlier sweep of this sheet — see *STICKY*.
              (or (gethash p *changed*)
-                 (and *sticky* (gethash (cons sheet p) *sticky*)))))
+                 (and *sticky* (gethash (cons sheet p) *sticky*))))
+           (range-changed-p (cell)
+             ;; a whole-column/row reader recomputes when any column/row it reads
+             ;; holds a changed cell (ordering above guarantees those are settled).
+             (some (lambda (span)
+                     (loop for i from (span-lo span) to (span-hi span)
+                           thereis (if (eq (span-axis span) :col)
+                                       (gethash i *changed-cols*)
+                                       (gethash i *changed-rows*))))
+                   (cell-range-precedents cell))))
       (dolist (ref ordered)
         (let ((cell (find-cell sheet ref)))
           (when (and cell (not (gethash ref *fresh*)))
             (if (or (gethash ref seed-set)
-                    (some #'precedent-changed-p (cell-precedents cell)))
+                    (some #'precedent-changed-p (cell-precedents cell))
+                    (range-changed-p cell))
               ;; a seed, or an input changed: recompute (COMPUTE-CELL records
-              ;; into *CHANGED* whether the output actually changed).
+              ;; into *CHANGED* / *CHANGED-COLS* / *CHANGED-ROWS* whether the
+              ;; output actually changed).
               (handler-case (compute-cell sheet ref cell)
                 (sheet-error () nil))
               ;; inputs unchanged: skip recompute but mark up to date so a
