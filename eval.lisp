@@ -201,11 +201,11 @@ empty cell there signals, preserving error propagation.)
 A single-argument string may instead name a whole column/row — (cells \"A:A\"),
 (cells \"1:1\") — read as a SPAN (one coarse dependency, not per cell), or a table
 column — (cells \"Sales[Amount]\") — read via TABLE-COL."
-  (multiple-value-bind (tname tcol)
-      (if bottom-right (values nil nil) (%parse-structured-ref top-left))
+  (multiple-value-bind (tname tcol tpart)
+      (if bottom-right (values nil nil nil) (%parse-structured-ref top-left))
     (let ((span (and (null bottom-right) (null tname) (%parse-span top-left))))
       (cond
-        (tname (table-col tname tcol))                    ; "Sales[Amount]"
+        (tname (table-col tname tcol (or tpart :data)))   ; "Sales[Amount]" / "[@Amount]"
         (span  (read-span *sheet* span))                  ; "A:A" / "1:1"
         (t (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
              (let ((out '()))
@@ -348,11 +348,42 @@ or NIL."
                     (string= want (string-downcase (string v))))
             return c)))
 
-(defun table-col (name column)
-  "Read a table column by header text: the values of table NAME's COLUMN (a header
-string) over the table's DATA rows. Records ONE coarse whole-column dependency
-(like COL), so the reference re-fires when the column's data changes or grows.
-Signals UNKNOWN-NAME (=> #NAME?) if the table or the header column is unknown."
+(defun %table-single-cell (sheet table col which)
+  "Read the :HEADERS or :TOTALS cell of TABLE's column COL as a scalar, recording a
+fine-grained single-cell dependency. Signals if WHICH is :TOTALS and the table has
+no totals row."
+  (let* ((region (table-region table))
+         (row (ecase which
+                (:headers (ref-row (car region)))
+                (:totals
+                 (unless (table-totals-p table)
+                   (error 'unknown-name
+                          :format-control "Table ~S has no totals row"
+                          :format-arguments (list (table-name table))))
+                 (ref-row (cdr region))))))
+    (read-cell-blank sheet (make-ref row col))))
+
+(defun %table-this-row (sheet table col)
+  "Read TABLE's column COL cell on the COMPUTING cell's row — the @ reference used
+in a calculated column — as a scalar, with a single-cell dependency. Signals if
+there is no computing row or it is outside the table's data rows."
+  (let ((here (car *eval-stack*)))               ; the cell being computed
+    (unless here
+      (error 'unknown-name :format-control "@-reference outside a formula"))
+    (let ((r (ref-row here)) (rows (%table-data-rows table)))
+      (unless (and rows (<= (car rows) r (cdr rows)))
+        (error 'unknown-name
+               :format-control "@-reference outside table ~S data rows"
+               :format-arguments (list (table-name table))))
+      (read-cell-blank sheet (make-ref r col)))))
+
+(defun table-col (name column &optional (part :data))
+  "Read table NAME's COLUMN (by header text). PART selects which rows:
+  :DATA (default) — the column's data rows as a list (one coarse whole-column
+    dependency, like COL, re-firing when the data changes or grows);
+  :THIS-ROW — the single cell in COLUMN on the computing cell's row (Sales[@Amount]);
+  :TOTALS / :HEADERS — the totals/header cell of COLUMN (a scalar).
+Signals UNKNOWN-NAME (=> #NAME?) if the table or header column is unknown."
   (let* ((sheet *sheet*)
          (table (gethash (%name-key name) (sheet-tables sheet))))
     (unless table
@@ -362,26 +393,33 @@ Signals UNKNOWN-NAME (=> #NAME?) if the table or the header column is unknown."
       (unless col
         (error 'unknown-name :format-control "Table ~S has no column ~S"
                              :format-arguments (list name column)))
-      ;; coarse dep on the whole physical column; the table's row-bound is applied
-      ;; only at read time (a change in the column outside the table re-fires but
-      ;; recomputes to the same value).
-      (note-range (make-span :col col col))
-      (let ((rows (%table-data-rows table)))
-        (if rows (read-column-cells sheet col (car rows) (cdr rows)) '())))))
+      (ecase part
+        (:data
+         ;; coarse dep on the whole physical column; the table's row-bound is
+         ;; applied only at read time (a change in the column outside the table
+         ;; re-fires but recomputes to the same value).
+         (note-range (make-span :col col col))
+         (let ((rows (%table-data-rows table)))
+           (if rows (read-column-cells sheet col (car rows) (cdr rows)) '())))
+        (:this-row (%table-this-row sheet table col))
+        (:totals   (%table-single-cell sheet table col :totals))
+        (:headers  (%table-single-cell sheet table col :headers))))))
 
 (defun %parse-structured-ref (designator)
-  "Parse a structured table reference \"Name[Column]\" into (values table-name
-column-string), or NIL when DESIGNATOR is not one — so CELLS falls back to span /
-range parsing. (Phase-1 grammar: a plain data column.)"
+  "Parse a structured table reference into (values name column part): \"Name[Column]\"
+=> PART :DATA; \"Name[@Column]\" => :THIS-ROW (the computing row's cell). NIL when
+DESIGNATOR is not a structured ref, so CELLS falls back to span / range parsing."
   (when (typep designator '(or string symbol))
     (let* ((s (string designator))
            (lb (position #\[ s))
            (len (length s)))
       (when (and lb (plusp lb) (plusp len) (char= (char s (1- len)) #\]))
         (let ((name (subseq s 0 lb))
-              (col (subseq s (1+ lb) (1- len))))
-          (when (and (plusp (length name)) (plusp (length col)))
-            (values name col)))))))
+              (inner (subseq s (1+ lb) (1- len))))
+          (when (and (plusp (length name)) (plusp (length inner)))
+            (if (char= (char inner 0) #\@)
+                (when (> (length inner) 1) (values name (subseq inner 1) :this-row))
+                (values name inner :data))))))))
 
 ;;; --- aggregates -----------------------------------------------------
 

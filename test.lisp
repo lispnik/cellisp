@@ -2432,6 +2432,44 @@ full RECALC-ALL. Returns T iff the invariant always held."
       (check (table-ref s "Sales") (cons (cons 0 0) (cons 2 2)))  ; A1:C3
       (check (get-value s "G1") 275)))                   ; 100 + 175
 
+  ;; ---- table conveniences: @this-row, totals row, auto-expand ------------
+  ;; @this-row (Inv[@Qty]) — a calculated column, both surfaces
+  (let ((s (make-sheet)))
+    (set-cell s "A1" "Item") (set-cell s "B1" "Qty") (set-cell s "C1" "Price") (set-cell s "D1" "Total")
+    (set-cell s "A2" "Pen") (set-cell s "B2" 3) (set-cell s "C2" 2)
+    (set-cell s "A3" "Pad") (set-cell s "B3" 5) (set-cell s "C3" 4)
+    (set-table s "Inv" "A1" "D3")
+    (set-cell s "D2" '(* (table-col "Inv" "Qty" :this-row) (table-col "Inv" "Price" :this-row)))
+    (set-cell s "D3" '(* (cells "Inv[@Qty]") (cells "Inv[@Price]")))   ; string @ form
+    (check (get-value s "D2") 6)
+    (check (get-value s "D3") 20)
+    (set-cell s "B2" 10)                                 ; change Qty -> D2 recalcs
+    (check (get-value s "D2") 20))
+  ;; totals row: data reads exclude it; :totals reads it (no self-cycle)
+  (let ((s (make-sheet)))
+    (set-cell s "A1" "R") (set-cell s "B1" "Amount")
+    (set-cell s "A2" "N") (set-cell s "B2" 100)
+    (set-cell s "A3" "S") (set-cell s "B3" 250)
+    (set-cell s "A4" "Total")
+    (set-table s "Sales" "A1" "B4" :totals t)            ; row 4 totals, data 2-3
+    (set-cell s "B4" '(sum (table-col "Sales" "Amount")))
+    (set-cell s "E1" '(table-col "Sales" "Amount" :totals))
+    (check (get-value s "B4") 350)                       ; excludes the totals cell
+    (check (get-value s "E1") 350))
+  ;; auto-expand: typing directly below / right of the table grows it
+  (let ((s (make-sheet)))
+    (set-cell s "A1" "R") (set-cell s "B1" "Amount")
+    (set-cell s "A2" "N") (set-cell s "B2" 100)
+    (set-cell s "A3" "S") (set-cell s "B3" 250)
+    (set-table s "Sales" "A1" "B3")
+    (set-cell s "E1" '(sum (table-col "Sales" "Amount")))
+    (check (get-value s "E1") 350)
+    (set-cell s "A4" "E") (set-cell s "B4" 175)          ; a new row below -> grow down
+    (check (table-ref s "Sales") (cons (cons 0 0) (cons 3 1)))
+    (check (get-value s "E1") 525)                        ; the total picks it up
+    (set-cell s "C1" "Tax")                              ; a new column right -> grow right
+    (check (table-ref s "Sales") (cons (cons 0 0) (cons 3 2))))
+
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Test failures: ~D" *fails*))
   t)

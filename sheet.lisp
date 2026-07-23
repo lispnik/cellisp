@@ -441,6 +441,39 @@ and, when TOTALS-P, the trailing totals row — or NIL when there are no data ro
 ;; FORCE the header cells up to date (they may be uncomputed mid-sweep) via
 ;; EVALUATE-REF, without recording a dependency.
 
+(defun %overlaps-other-table (sheet self-key region)
+  "True if REGION overlaps a table other than SELF-KEY."
+  (block nil
+    (maphash (lambda (k tbl)
+               (unless (string= k self-key)
+                 (when (rects-overlap-p region (table-region tbl)) (return t))))
+             (sheet-tables sheet))
+    nil))
+
+(defun %maybe-grow-tables (sheet ref)
+  "Auto-expand: if REF sits directly below a table's region (a new data row, when
+the table has no totals row capping it) or directly to its right (a new column),
+grow that table's region to include it — unless the growth would overlap another
+table. Called on the set path BEFORE recompute, so the enlarged region is read
+this sweep. No-op when the sheet has no tables."
+  (when (plusp (hash-table-count (sheet-tables sheet)))
+    (let ((r (ref-row ref)) (c (ref-col ref)))
+      (maphash
+       (lambda (key tbl)
+         (let* ((rg (table-region tbl))
+                (r0 (ref-row (car rg))) (c0 (ref-col (car rg)))
+                (r1 (ref-row (cdr rg))) (c1 (ref-col (cdr rg)))
+                (new (cond
+                       ;; a new row directly below (no totals row to cap it)
+                       ((and (not (table-totals-p tbl)) (= r (1+ r1)) (<= c0 c c1))
+                        (cons (car rg) (make-ref (1+ r1) c1)))
+                       ;; a new column directly to the right
+                       ((and (= c (1+ c1)) (<= r0 r r1))
+                        (cons (car rg) (make-ref r1 (1+ c1)))))))
+           (when (and new (not (%overlaps-other-table sheet key new)))
+             (setf (table-region tbl) new))))
+       (sheet-tables sheet)))))
+
 (defun merge-cells (sheet top-left bottom-right)
   "Merge the rectangle TOP-LEFT..BOTTOM-RIGHT into one visual cell anchored at its
 top-left. Metadata only — values are untouched. Signals SHEET-ERROR if the

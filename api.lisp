@@ -144,6 +144,9 @@ is explicitly passed, so re-setting a formula doesn't silently demote it."
       (setf (cell-formula cell) formula)
       (when volatile-supplied-p
         (set-cell-volatile sheet ref volatile))
+      ;; auto-expand any table this cell was just typed directly below / right of,
+      ;; before recompute so the enlarged region is read this sweep.
+      (%maybe-grow-tables sheet ref)
       (cond
         (*deferred*                          ; inside a transaction: defer recompute
          (setf (gethash ref *deferred*) t)
