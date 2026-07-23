@@ -112,6 +112,10 @@ Rendered as #NUM!."))
   ;; without an edge per cell (cf. FOREIGN-DEPENDENTS). Rebuilt by RECALC-ALL.
   (col-watchers (make-hash-table :test 'eql) :type hash-table)
   (row-watchers (make-hash-table :test 'eql) :type hash-table)
+  ;; Named tables: upcased-name string -> TABLE struct (a header'd rectangular
+  ;; region whose columns are referenced by header text). Own slot like
+  ;; NAMES/MERGES/SPILLS; serialized and shifted under structural edits.
+  (tables (make-hash-table :test 'equal) :type hash-table)
   ;; Optional callback invoked after each recompute sweep with the sorted list
   ;; of refs whose value or error changed — the repaint set for a UI. NIL = off.
   ;; Not serialized (a live closure); reattach after LOAD-SHEET.
@@ -371,6 +375,71 @@ its cell across structural edits, and is serialized. Returns TEXT."
        (>= (ref-row (cdr a)) (ref-row (car b)))
        (<= (ref-col (car a)) (ref-col (cdr b)))
        (>= (ref-col (cdr a)) (ref-col (car b)))))
+
+;;; Named tables — a header'd rectangular region whose columns are referenced by
+;;; header text (Sales[Amount] / (table-col "Sales" "Amount")). Own registry (the
+;;; TABLES slot), separate from NAMES; the TABLE struct is in cell.lisp.
+
+(defun set-table (sheet name top-left bottom-right &key (headers t) totals)
+  "Define a table NAME over the rectangle TOP-LEFT..BOTTOM-RIGHT (corners ordered).
+HEADERS (default T) marks the first row as the header row (column names); TOTALS
+marks the last row as a totals row (excluded from data reads). Signals if the
+region overlaps a *different* existing table (redefining the same name replaces
+it). Returns NAME."
+  (with-sheet-lock (sheet)
+    (let ((region (%normalize-rect top-left bottom-right))
+          (key (%name-key name)))
+      (maphash (lambda (k tbl)
+                 (unless (string= k key)
+                   (when (rects-overlap-p region (table-region tbl))
+                     (error 'sheet-error
+                            :format-control "Table ~S overlaps existing table ~S"
+                            :format-arguments (list name (table-name tbl))))))
+               (sheet-tables sheet))
+      (setf (gethash key (sheet-tables sheet))
+            (%make-table name region headers totals))
+      name)))
+
+(defun table-ref (sheet name)
+  "The (top-left . bottom-right) region of table NAME, or NIL if unbound."
+  (with-sheet-lock (sheet)
+    (let ((tbl (gethash (%name-key name) (sheet-tables sheet))))
+      (and tbl (copy-tree (table-region tbl))))))
+
+(defun remove-table (sheet name)
+  "Remove table NAME (the underlying cells are untouched)."
+  (with-sheet-lock (sheet)
+    (remhash (%name-key name) (sheet-tables sheet)))
+  (values))
+
+(defun map-tables (fn sheet)
+  "Call FN with (name table-struct) for every table on SHEET (name = user casing)."
+  (with-sheet-lock (sheet)
+    (maphash (lambda (k tbl) (declare (ignore k)) (funcall fn (table-name tbl) tbl))
+             (sheet-tables sheet))))
+
+(defun table-at (sheet ref)
+  "The TABLE struct whose region contains REF, or NIL (tables never overlap, so
+the first match is the only one)."
+  (with-sheet-lock (sheet)
+    (maphash (lambda (k tbl)
+               (declare (ignore k))
+               (when (ref-in-rect-p ref (table-region tbl))
+                 (return-from table-at tbl)))
+             (sheet-tables sheet))
+    nil))
+
+(defun %table-data-rows (table)
+  "The inclusive (r0 . r1) row range of TABLE's DATA — excluding the header row
+and, when TOTALS-P, the trailing totals row — or NIL when there are no data rows."
+  (let* ((region (table-region table))
+         (r0 (+ (ref-row (car region)) (if (table-headers-p table) 1 0)))
+         (r1 (- (ref-row (cdr region)) (if (table-totals-p table) 1 0))))
+    (and (<= r0 r1) (cons r0 r1))))
+
+;; %TABLE-COL-INDEX (header-text column resolution) lives in eval.lisp — it must
+;; FORCE the header cells up to date (they may be uncomputed mid-sweep) via
+;; EVALUATE-REF, without recording a dependency.
 
 (defun merge-cells (sheet top-left bottom-right)
   "Merge the rectangle TOP-LEFT..BOTTOM-RIGHT into one visual cell anchored at its

@@ -20,7 +20,7 @@
 ;;;; only on load. On read, *READ-EVAL* is bound NIL so a #. cannot execute.
 ;;;; ------------------------------------------------------------------
 
-(defparameter *serialization-version* 1)
+(defparameter *serialization-version* 2)   ; 2 adds :tables
 
 (defun %check-version (version what)
   "Signal if VERSION (from a loaded file) is newer than this build can read.
@@ -132,6 +132,19 @@ and closure-based config are not written."
                                        acc))
                                (sheet-spills sheet))
                       acc)
+            ;; tables: (name "A1" "C4" :headers t :totals nil)
+            :tables (let ((acc '()))
+                      (maphash (lambda (k tbl)
+                                 (declare (ignore k))
+                                 (let ((rg (table-region tbl)))
+                                   (push (list (table-name tbl)
+                                               (ref-string (car rg))
+                                               (ref-string (cdr rg))
+                                               :headers (table-headers-p tbl)
+                                               :totals (table-totals-p tbl))
+                                         acc)))
+                               (sheet-tables sheet))
+                      acc)
             :cells (nreverse cells)))))
 
 (defun form->sheet (form)
@@ -139,7 +152,7 @@ and closure-based config are not written."
   (unless (and (consp form) (eq (car form) :cellisp-sheet))
     (error 'sheet-error :format-control "Not a cellisp sheet form: ~S"
                         :format-arguments (list form)))
-  (destructuring-bind (&key version environment names notes merges spills cells
+  (destructuring-bind (&key version environment names notes merges spills tables cells
                        &allow-other-keys)
       (cdr form)
     (%check-version version "Sheet")
@@ -154,6 +167,9 @@ and closure-based config are not written."
       (dolist (sp spills)     ; (anchor-string rows cols)
         (setf (gethash (parse-ref (first sp)) (sheet-spills sheet))
               (cons (second sp) (third sp))))
+      (dolist (tb tables)     ; (name "A1" "C4" :headers t :totals nil)
+        (destructuring-bind (name tl br &key headers totals) tb
+          (set-table sheet name tl br :headers headers :totals totals)))
       ;; 1. create cells and apply value-wrapping / source config FIRST, so
       ;;    they are active when the formulas recompute below.
       (dolist (pl cells)

@@ -108,6 +108,23 @@
   (and (eq (span-axis span) axis) (<= (span-lo span) index (span-hi span))))
 
 ;;;; ------------------------------------------------------------------
+;;;; Tables — a named rectangular region with a header row
+;;;;
+;;;; A TABLE names a rectangle whose columns are referenced by header text
+;;;; (Sales[Amount]) rather than by grid coordinate, so the reference tracks the
+;;;; column's DATA as it grows/shrinks. REGION is the full (tl . br) rectangle
+;;;; including the header row (its first row) and, when TOTALS-P, a trailing
+;;;; totals row; the data rows lie between. Registered per-sheet in the TABLES
+;;;; slot (see sheet.lisp). NAME keeps the user's casing; the slot key is upcased.
+;;;; ------------------------------------------------------------------
+
+(defstruct (table (:constructor %make-table (name region headers-p totals-p)))
+  (name nil)
+  (region nil :type cons)      ; (tl-ref . br-ref)
+  (headers-p t)                ; first REGION row is the header row
+  (totals-p nil))              ; last REGION row is a totals row
+
+;;;; ------------------------------------------------------------------
 ;;;; Cell
 ;;;; ------------------------------------------------------------------
 

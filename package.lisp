@@ -51,6 +51,9 @@
    #:copy-cell #:fill-range #:spill #:respill
    ;; named cells and ranges
    #:set-name #:remove-name #:name-ref #:set-range #:range-ref #:map-names
+   ;; tables (named header'd regions; columns referenced by header text)
+   #:set-table #:table-ref #:remove-table #:map-tables #:table-at
+   #:table-name #:table-region #:table-headers-p #:table-totals-p
    ;; cell notes / comments
    #:set-note #:cell-note #:remove-note #:map-notes
    ;; merged cells
@@ -66,6 +69,7 @@
    ;; formula helpers usable inside formulas
    #:cell #:cells #:sum #:average #:cnt
    #:col #:row                                ; whole-column / whole-row reads
+   #:table-col                                ; a table column by header text
    ;; formula standard library (stdlib.lisp)
    #:minimum #:maximum #:product #:median
    #:countif #:sumif #:averageif #:safe-cells

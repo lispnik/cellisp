@@ -2381,6 +2381,57 @@ full RECALC-ALL. Returns T iff the invariant always held."
     (ignore-errors (set-cell s "A2" '(sum (col "A"))))   ; A2 in col A reads col A
     (check (and (typep (nth-value 1 (get-value s "A2")) 'cyclic-reference) t) t))
 
+  ;; ---- computable tables: Sales[Amount] / (table-col "Sales" "Amount") ----
+  (flet ((sales ()          ; A1:C4, row 1 headers Region/Qty/Amount
+           (let ((s (make-sheet)))
+             (set-cell s "A1" "Region") (set-cell s "B1" "Qty") (set-cell s "C1" "Amount")
+             (set-cell s "A2" "North")  (set-cell s "B2" 3)  (set-cell s "C2" 100)
+             (set-cell s "A3" "South")  (set-cell s "B3" 10) (set-cell s "C3" 250)
+             (set-cell s "A4" "East")   (set-cell s "B4" 5)  (set-cell s "C4" 175)
+             (set-table s "Sales" "A1" "C4")
+             s)))
+    ;; both surfaces read the same; data only (header text excluded); coarse dep
+    (let ((s (sales)))
+      (set-cell s "E1" '(sum (table-col "Sales" "Amount")))
+      (set-cell s "E2" '(sum (cells "Sales[Amount]")))
+      (set-cell s "E3" '(average (table-col "Sales" "Qty")))
+      (check (get-value s "E1") 525)
+      (check (get-value s "E2") 525)
+      (check (get-value s "E3") 6)
+      (check (precedents s "E1") '())                             ; no per-cell edges
+      (check (and (member (parse-ref "E1") (cellisp::watchers-of s :col 2) :test #'equal) t) t)
+      (set-cell s "C3" 1000)                                      ; change data -> re-total
+      (check (get-value s "E1") 1275))                            ; 100 + 1000 + 175
+    ;; unknown column / table -> #NAME? (set-cell re-signals the stored error)
+    (let ((s (sales)))
+      (ignore-errors (set-cell s "E1" '(cnt (table-col "Sales" "Nope"))))
+      (check (and (typep (nth-value 1 (get-value s "E1")) 'unknown-name) t) t)
+      (ignore-errors (set-cell s "E2" '(cnt (table-col "Nope" "Amount"))))
+      (check (and (typep (nth-value 1 (get-value s "E2")) 'unknown-name) t) t))
+    ;; overlap is rejected
+    (let ((s (sales)))
+      (check-signals sheet-error (set-table s "Other" "B2" "D5")))
+    ;; serialization: the table survives a round-trip and later edits still recalc
+    (let ((s (sales)))
+      (set-cell s "E1" '(sum (table-col "Sales" "Amount")))
+      (let ((r (form->sheet (sheet->form s))))
+        (check (get-value r "E1") 525)
+        (check (table-ref r "Sales") (cons (cons 0 0) (cons 3 2)))
+        (set-cell r "C2" 1000)
+        (check (get-value r "E1") 1425)))
+    ;; structural: an interior column insert grows the region; the ref still totals
+    (let ((s (sales)))
+      (set-cell s "G1" '(sum (table-col "Sales" "Amount")))
+      (insert-column s 2)                                ; insert before col B (inside)
+      (check (table-ref s "Sales") (cons (cons 0 0) (cons 3 3)))  ; A1:D4
+      (check (get-value s "H1") 525))                    ; G1 shifted to H1, still 525
+    ;; structural: deleting a data row shrinks the table
+    (let ((s (sales)))
+      (set-cell s "G1" '(sum (table-col "Sales" "Amount")))
+      (delete-row s 3)                                   ; delete the South data row
+      (check (table-ref s "Sales") (cons (cons 0 0) (cons 2 2)))  ; A1:C3
+      (check (get-value s "G1") 275)))                   ; 100 + 175
+
   (format t "~&~D checks, ~D failures.~%" *count* *fails*)
   (when (plusp *fails*) (error "Test failures: ~D" *fails*))
   t)

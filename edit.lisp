@@ -216,6 +216,25 @@ shifted anchor. A spill whose anchor is deleted is dropped."
      table)
     new))
 
+(defun shift-tables (table-hash col-shift row-shift)
+  "Reshape each table's region under a structural edit — the row-range via
+ROW-SHIFT and the col-range via COL-SHIFT, each with the Excel-faithful %SHIFT-BAND
+(endpoint delete shrinks, interior insert grows). A table is dropped only when a
+whole axis (all its rows, or all its columns) is deleted. Returns a fresh table."
+  (let ((new (make-hash-table :test 'equal)))
+    (maphash
+     (lambda (key tbl)
+       (let* ((rg (table-region tbl))
+              (r0 (ref-row (car rg))) (c0 (ref-col (car rg)))
+              (r1 (ref-row (cdr rg))) (c1 (ref-col (cdr rg))))
+         (multiple-value-bind (nr0 nr1) (%shift-band r0 r1 row-shift)
+           (multiple-value-bind (nc0 nc1) (%shift-band c0 c1 col-shift)
+             (unless (or (eq nr0 :deleted) (eq nc0 :deleted))
+               (setf (table-region tbl) (cons (make-ref nr0 nc0) (make-ref nr1 nc1))
+                     (gethash key new) tbl))))))
+     table-hash)
+    new))
+
 (defun structural-edit (sheet shift-fn &key (col-shift #'identity) (row-shift #'identity))
   "Apply SHIFT-FN (a ref -> ref-or-:deleted map) to SHEET: rewrite static refs
 in every formula, move cells to their shifted keys (dropping deleted ones),
@@ -250,7 +269,9 @@ axis (a row edit leaves columns alone, and vice versa)."
             ;; spill anchors follow their cell AND the extent is recomputed, so a
             ;; row/column change inside a spill doesn't leave RESPILL clearing the
             ;; wrong rectangle (dropped if the anchor is deleted)
-            (sheet-spills sheet)    (shift-spills (sheet-spills sheet) shift-fn))
+            (sheet-spills sheet)    (shift-spills (sheet-spills sheet) shift-fn)
+            ;; tables reshape their region per axis (Excel-faithful, like spans)
+            (sheet-tables sheet)    (shift-tables (sheet-tables sheet) col-shift row-shift))
       ;; watcher index is stale after the move; RECALC-ALL rebuilds it as every
       ;; formula re-registers its (now-shifted) spans.
       (clear-watchers sheet)

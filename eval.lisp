@@ -198,19 +198,22 @@ present. An existing cell that holds an error still propagates it; use SAFE-CELL
 to skip errored cells too. (A single-cell read via CELL stays strict — reading an
 empty cell there signals, preserving error propagation.)
 
-A single colon-string argument may instead name a whole column/row —
-(cells \"A:A\"), (cells \"A:C\"), (cells \"1:1\"), (cells \"2:5\") — read as a
-SPAN (see READ-SPAN): one coarse dependency on the column/row, not per cell."
-  (let ((span (and (null bottom-right) (%parse-span top-left))))
-    (if span
-        (read-span *sheet* span)
-        (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
-          (let ((out '()))
-            (loop for r from r0 to r1 do
-              (loop for c from c0 to c1
-                    for ref = (make-ref r c)
-                    do (push (read-cell-blank target ref) out)))
-            (nreverse out))))))
+A single-argument string may instead name a whole column/row — (cells \"A:A\"),
+(cells \"1:1\") — read as a SPAN (one coarse dependency, not per cell), or a table
+column — (cells \"Sales[Amount]\") — read via TABLE-COL."
+  (multiple-value-bind (tname tcol)
+      (if bottom-right (values nil nil) (%parse-structured-ref top-left))
+    (let ((span (and (null bottom-right) (null tname) (%parse-span top-left))))
+      (cond
+        (tname (table-col tname tcol))                    ; "Sales[Amount]"
+        (span  (read-span *sheet* span))                  ; "A:A" / "1:1"
+        (t (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
+             (let ((out '()))
+               (loop for r from r0 to r1 do
+                 (loop for c from c0 to c1
+                       for ref = (make-ref r c)
+                       do (push (read-cell-blank target ref) out)))
+               (nreverse out))))))))
 
 ;;; --- whole-column / whole-row reads (spans) -------------------------
 ;;;
@@ -305,6 +308,80 @@ are read in the cellisp package, so there is no clash."
       (when (minusp lo)
         (error 'bad-reference :format-control "Row must be >= 1"))
       (read-span *sheet* (make-span :row lo hi)))))
+
+;;; --- structured table references (Sales[Amount] / table-col) --------
+;;;
+;;; A table-column read bounds a single column to the table's DATA rows (header
+;;; and totals excluded) but records the SAME coarse :col span dependency as COL
+;;; — so it reuses the whole watcher/recompute machinery and re-fires when the
+;;; column changes or grows. Column is resolved by header text.
+
+(defun read-column-cells (sheet col r0 r1 &optional tolerant)
+  "The populated values of column COL over rows R0..R1 (inclusive), top to bottom,
+blanks skipped. Records NO per-cell precedent — the caller records the coarse span
+dependency. Existing errors propagate unless TOLERANT."
+  (let ((out '()))
+    (loop for r from r0 to r1
+          for v = (if tolerant
+                      (ignore-errors (read-cell-raw sheet (make-ref r col)))
+                      (read-cell-raw sheet (make-ref r col)))
+          do (when v (push v out)))
+    (nreverse out)))
+
+(defun %table-header-value (sheet table col)
+  "TABLE's header-cell value in column COL — forced up to date (it may be
+uncomputed mid-sweep) but recording NO dependency; column resolution is
+structural, like a name lookup. NIL for an empty/errored header."
+  (let ((hrow (ref-row (car (table-region table)))))
+    (and (find-cell sheet (make-ref hrow col))
+         (ignore-errors (evaluate-ref sheet (make-ref hrow col))))))
+
+(defun %table-col-index (sheet table header)
+  "The column index within TABLE whose header cell equals HEADER (case-insensitive),
+or NIL."
+  (let* ((region (table-region table))
+         (c0 (ref-col (car region))) (c1 (ref-col (cdr region)))
+         (want (string-downcase (string header))))
+    (loop for c from c0 to c1
+          for v = (%table-header-value sheet table c)
+          when (and (typep v '(or string symbol))
+                    (string= want (string-downcase (string v))))
+            return c)))
+
+(defun table-col (name column)
+  "Read a table column by header text: the values of table NAME's COLUMN (a header
+string) over the table's DATA rows. Records ONE coarse whole-column dependency
+(like COL), so the reference re-fires when the column's data changes or grows.
+Signals UNKNOWN-NAME (=> #NAME?) if the table or the header column is unknown."
+  (let* ((sheet *sheet*)
+         (table (gethash (%name-key name) (sheet-tables sheet))))
+    (unless table
+      (error 'unknown-name :format-control "No table named ~S"
+                           :format-arguments (list name)))
+    (let ((col (%table-col-index sheet table column)))
+      (unless col
+        (error 'unknown-name :format-control "Table ~S has no column ~S"
+                             :format-arguments (list name column)))
+      ;; coarse dep on the whole physical column; the table's row-bound is applied
+      ;; only at read time (a change in the column outside the table re-fires but
+      ;; recomputes to the same value).
+      (note-range (make-span :col col col))
+      (let ((rows (%table-data-rows table)))
+        (if rows (read-column-cells sheet col (car rows) (cdr rows)) '())))))
+
+(defun %parse-structured-ref (designator)
+  "Parse a structured table reference \"Name[Column]\" into (values table-name
+column-string), or NIL when DESIGNATOR is not one — so CELLS falls back to span /
+range parsing. (Phase-1 grammar: a plain data column.)"
+  (when (typep designator '(or string symbol))
+    (let* ((s (string designator))
+           (lb (position #\[ s))
+           (len (length s)))
+      (when (and lb (plusp lb) (plusp len) (char= (char s (1- len)) #\]))
+        (let ((name (subseq s 0 lb))
+              (col (subseq s (1+ lb) (1- len))))
+          (when (and (plusp (length name)) (plusp (length col)))
+            (values name col)))))))
 
 ;;; --- aggregates -----------------------------------------------------
 
