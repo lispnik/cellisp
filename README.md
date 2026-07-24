@@ -212,6 +212,13 @@ short-circuited recompute, now cross-sheet:
   (get-value summary "B1"))           ; => 120  (Summary recomputed)
 ```
 
+Whole-column/row and table references work across sheets too — qualify the
+one-argument `cells` form: `(cells "Data!A:A")`, `(cells "Data!1:1")`, and
+`(cells "Data!Sales[Amount]")` read another sheet's column / row / table column.
+Like their local counterparts these are **coarse** (one cross-sheet dependency on the
+target's column/row, not one per cell), so a change anywhere on that line of the
+target — now or later — re-fires the reader through the cascade.
+
 Sheet names are case-insensitive; `find-sheet` looks one up, `workbook-names`
 lists them in order. A sheet from `make-sheet` is standalone and pays none of the
 cross-sheet cost. Producers are always recomputed before their consumers;

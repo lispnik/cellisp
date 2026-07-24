@@ -23,6 +23,14 @@ All notable changes to Cellisp are documented here. The format follows
   typed directly below/right. Tables serialize (`:tables`, serialization version 2),
   shift Excel-faithfully under structural edits, and reject overlap. API: `set-table`,
   `table-ref`, `remove-table`, `map-tables`, `table-at`, `table-col`.
+- **Cross-sheet whole-column/row and table references.** The sheet-qualified forms
+  `(cells "Data!A:A")`, `(cells "Data!1:1")`, and `(cells "Data!Sales[Amount]")` read
+  another sheet's column / row / table column, recording a *coarse* cross-sheet
+  dependency (a per-target column/row watcher, `foreign-col/row-watchers`) so the
+  workbook cascade re-fires the reader when any cell on that line of the target
+  changes — including a cell filled in later — with no per-cell foreign edges.
+- **copy/fill shift whole-column/row references** by the paste offset, like cell
+  refs (off-grid → `#REF!`); table references, being name-based, stay put.
 
 ### Changed
 - **Concurrency: unified workbook locking.** A workbook's sheets now share one

@@ -224,6 +224,7 @@ they still read it)."
                             (remove ref (cell-dependents c) :test 'equal)))))
           ;; and from any cross-sheet producers we read
           (when (cell-foreign-precedents cell) (detach-foreign sheet ref cell))
+          (when (cell-foreign-range-precedents cell) (detach-foreign-ranges sheet ref cell))
           ;; and drop any whole-column/row watcher entries this cell registered
           (dolist (span (cell-range-precedents cell))
             (loop for i from (span-lo span) to (span-hi span)
@@ -443,13 +444,17 @@ propagates across sheets."
 
 (defun %foreign-work (sheet changed)
   "For the CHANGED local refs of SHEET, group the foreign consumers to refresh as
-an ordered alist (consumer-sheet . refs)."
+an ordered alist (consumer-sheet . refs) — both the per-cell readers
+(FOREIGN-DEPENDENTS) and the whole-column/row readers (FOREIGN-COL/ROW-WATCHERS)."
   (let ((by-sheet (make-hash-table :test 'eq)) (order '()))
-    (dolist (r changed)
-      (dolist (g (gethash r (sheet-foreign-dependents sheet)))
-        (let ((cs (car g)) (cr (cdr g)))
-          (unless (gethash cs by-sheet) (push cs order))
-          (pushnew cr (gethash cs by-sheet) :test #'equal))))
+    (flet ((add (g)
+             (let ((cs (car g)) (cr (cdr g)))
+               (unless (gethash cs by-sheet) (push cs order))
+               (pushnew cr (gethash cs by-sheet) :test #'equal))))
+      (dolist (r changed)
+        (dolist (g (gethash r (sheet-foreign-dependents sheet))) (add g))
+        (dolist (g (gethash (ref-col r) (sheet-foreign-col-watchers sheet))) (add g))
+        (dolist (g (gethash (ref-row r) (sheet-foreign-row-watchers sheet))) (add g))))
     (loop for cs in (nreverse order) collect (cons cs (gethash cs by-sheet)))))
 
 (defun cascade-foreign (origin changed)

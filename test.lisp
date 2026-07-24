@@ -2388,6 +2388,27 @@ full RECALC-ALL. Returns T iff the invariant always held."
     (copy-cell s "H1" "I1")
     (check (get-formula s "I1") '(sum (table-col "T" "H"))))
 
+  ;; cross-sheet whole-column + table references (Data!A:A, Data!Sales[Amt])
+  (let* ((wb (make-workbook))
+         (data (add-sheet wb "Data")) (main (add-sheet wb "Main")))
+    (dotimes (i 3) (set-cell data (cons i 0) (1+ i)))      ; Data!A1..A3 = 1,2,3
+    (set-cell main "B1" '(sum (cells "Data!A:A")))
+    (check (get-value main "B1") 6)                        ; cross-sheet whole column
+    (set-cell data (cons 1 0) 40)                          ; A2 1->40
+    (check (get-value main "B1") 44)                       ; the cascade re-fires it
+    (set-cell data (cons 8 0) 100)                         ; a cell added LATER
+    (check (get-value main "B1") 144)                      ; picked up across sheets
+    (set-cell data "C1" "Region") (set-cell data "D1" "Amt")
+    (set-cell data "C2" "N") (set-cell data "D2" 100)
+    (set-cell data "C3" "S") (set-cell data "D3" 250)
+    (set-table data "Sales" "C1" "D3")
+    (set-cell main "B2" '(sum (cells "Data!Sales[Amt]")))
+    (check (get-value main "B2") 350)                      ; cross-sheet table column
+    (set-cell data "D2" 1000)
+    (check (get-value main "B2") 1250)                     ; re-fires on the data change
+    (set-cell data "C2" "North")                           ; an UNwatched column (C)
+    (check (get-value main "B2") 1250))                    ; leaves the column-D reader
+
   ;; a whole-column reader sees a clear/add deferred inside a WITH-TRANSACTION
   (let ((s (make-sheet)))
     (dotimes (i 3) (set-cell s (cons i 0) (1+ i)))       ; A1..A3 = 1,2,3

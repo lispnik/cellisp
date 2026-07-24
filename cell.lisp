@@ -147,6 +147,10 @@
    ;; grefs (sheet . ref). The producer side is tracked on the sheet's
    ;; FOREIGN-DEPENDENTS table. Empty for a standalone (non-workbook) sheet.
    (foreign-precedents :initform '() :accessor cell-foreign-precedents :type list)
+   ;; Cross-sheet SPAN precedents: whole columns/rows this one reads in OTHER
+   ;; sheets (via "Data!A:A" / "Data!Sales[Amount]"), as a list of (target-sheet
+   ;; . span) conses. The producer side is the target's FOREIGN-COL/ROW-WATCHERS.
+   (foreign-range-precedents :initform '() :accessor cell-foreign-range-precedents :type list)
    ;; Compiled-thunk cache for the environment eval path: COMPILED is the
    ;; function compiled from the formula in COMPILED-FROM (compared by EQ).
    (compiled :initform nil :accessor cell-compiled :type (or null function))

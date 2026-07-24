@@ -43,6 +43,10 @@ indices carrying a cell whose value/error changed — so a whole-column reader
   "When bound (a hash-table) during COMPUTE-CELL of a cell in a workbook sheet,
 holds the cross-sheet grefs (sheet . ref) the running formula reads. NIL for a
 standalone sheet, so single-sheet evaluation allocates nothing extra.")
+(defvar *collected-foreign-ranges* nil
+  "When bound (a hash-table keyed EQUAL) during COMPUTE-CELL of a workbook cell,
+holds the cross-sheet SPANs it reads, each as a (target-sheet . span) cons — the
+coarse counterpart of *COLLECTED-FOREIGN* for \"Data!A:A\"-style reads.")
 (defvar *deferred* nil
   "Inside WITH-TRANSACTION this is a hash-table collecting the seed refs of every
 edit, so recomputation is deferred until the transaction commits (one sweep) and
@@ -78,6 +82,12 @@ coarse counterpart of NOTE-PRECEDENT."
   "Record a cross-sheet read of TARGET's REF by the formula being computed."
   (when *collected-foreign*
     (setf (gethash (cons target ref) *collected-foreign*) t)))
+
+(defun note-foreign-range (target span)
+  "Record a cross-sheet whole-column/row (SPAN) read of TARGET — the coarse
+counterpart of NOTE-FOREIGN."
+  (when *collected-foreign-ranges*
+    (setf (gethash (cons target span) *collected-foreign-ranges*) t)))
 
 (defun split-sheet-designator (designator)
   "For a string/symbol like \"Data!A1\", return (values \"Data\" \"A1\"). With no
@@ -200,20 +210,32 @@ empty cell there signals, preserving error propagation.)
 
 A single-argument string may instead name a whole column/row — (cells \"A:A\"),
 (cells \"1:1\") — read as a SPAN (one coarse dependency, not per cell), or a table
-column — (cells \"Sales[Amount]\") — read via TABLE-COL."
-  (multiple-value-bind (tname tcol tpart)
-      (if bottom-right (values nil nil nil) (%parse-structured-ref top-left))
-    (let ((span (and (null bottom-right) (null tname) (%parse-span top-left))))
-      (cond
-        (tname (table-col tname tcol (or tpart :data)))   ; "Sales[Amount]" / "[@Amount]"
-        (span  (read-span *sheet* span))                  ; "A:A" / "1:1"
-        (t (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
-             (let ((out '()))
-               (loop for r from r0 to r1 do
-                 (loop for c from c0 to c1
-                       for ref = (make-ref r c)
-                       do (push (read-cell-blank target ref) out)))
-               (nreverse out))))))))
+column — (cells \"Sales[Amount]\") — read via TABLE-COL.  Any of these one-arg forms
+may be sheet-qualified — (cells \"Data!A:A\"), (cells \"Data!Sales[Amount]\") — to
+read another sheet's column/table, recording a coarse cross-sheet dependency."
+  (multiple-value-bind (sheet-name local)
+      (if bottom-right (values nil top-left) (split-sheet-designator top-left))
+    (multiple-value-bind (tname tcol tpart)
+        (and (null bottom-right) (%parse-structured-ref local))
+      (let ((span (and (null bottom-right) (null tname) (%parse-span local))))
+        (cond
+          ;; "Sales[Amount]" / "[@Amount]"  (or "Data!Sales[Amount]" across sheets)
+          (tname (if sheet-name
+                     (foreign-table-col (require-sheet sheet-name) tname tcol (or tpart :data))
+                     (table-col tname tcol (or tpart :data))))
+          ;; "A:A" / "1:1"  (or "Data!A:A" across sheets)
+          (span (if sheet-name
+                    (read-foreign-span (require-sheet sheet-name) span)
+                    (read-span *sheet* span)))
+          ;; a rectangle / range name / single cell — RESOLVE-RANGE handles any
+          ;; sheet qualifier itself, so pass the original designator.
+          (t (multiple-value-bind (target r0 r1 c0 c1) (resolve-range top-left bottom-right)
+               (let ((out '()))
+                 (loop for r from r0 to r1 do
+                   (loop for c from c0 to c1
+                         for ref = (make-ref r c)
+                         do (push (read-cell-blank target ref) out)))
+                 (nreverse out)))))))))
 
 ;;; --- whole-column / whole-row reads (spans) -------------------------
 ;;;
@@ -421,6 +443,93 @@ DESIGNATOR is not a structured ref, so CELLS falls back to span / range parsing.
                 (when (> (length inner) 1) (values name (subseq inner 1) :this-row))
                 (values name inner :data))))))))
 
+;;; --- cross-sheet spans / table columns (Data!A:A, Data!Sales[Amount]) ----
+;;;
+;;; A qualified whole-column/row read of ANOTHER sheet: reads the producer's
+;;; SETTLED values (like READ-FOREIGN) and records ONE coarse cross-sheet
+;;; dependency (NOTE-FOREIGN-RANGE), so the workbook cascade re-fires the reader
+;;; when any cell on that column/row of the target changes — see the target's
+;;; FOREIGN-COL/ROW-WATCHERS and %FOREIGN-WORK.
+
+(defun read-foreign-cell (target ref &optional tolerant)
+  "TARGET's settled value at REF, or NIL for an empty cell; an errored cell
+re-signals unless TOLERANT. Records no dependency."
+  (let ((cell (find-cell target ref)))
+    (cond ((null cell) nil)
+          ((cell-err cell) (if tolerant nil (error (cell-err cell))))
+          (t (cell-value cell)))))
+
+(defun read-foreign-column-cells (target col r0 r1 &optional tolerant)
+  "TARGET's populated values in column COL over rows R0..R1, top to bottom."
+  (let ((out '()))
+    (loop for r from r0 to r1
+          for v = (read-foreign-cell target (make-ref r col) tolerant)
+          do (when v (push v out)))
+    (nreverse out)))
+
+(defun read-foreign-span (target span &optional tolerant)
+  "Read SPAN (a whole column/row) of another sheet TARGET as a flat row-major list
+of its populated cells' values, recording one coarse cross-sheet dependency. Bounded
+by TARGET's used range; empty cells skipped."
+  (note-foreign-range target span)
+  (let ((ur (used-range target)))
+    (when ur
+      (destructuring-bind ((minr . minc) maxr . maxc) ur
+        (let ((out '()))
+          (ecase (span-axis span)
+            (:col (let ((c0 (max minc (span-lo span))) (c1 (min maxc (span-hi span))))
+                    (loop for r from minr to maxr do
+                      (loop for c from c0 to c1
+                            for v = (read-foreign-cell target (make-ref r c) tolerant)
+                            do (when v (push v out))))))
+            (:row (let ((r0 (max minr (span-lo span))) (r1 (min maxr (span-hi span))))
+                    (loop for r from r0 to r1 do
+                      (loop for c from minc to maxc
+                            for v = (read-foreign-cell target (make-ref r c) tolerant)
+                            do (when v (push v out)))))))
+          (nreverse out))))))
+
+(defun %foreign-table-col-index (target table header)
+  "The column index in TABLE (on sheet TARGET) whose header cell equals HEADER
+case-insensitively, from TARGET's settled header values; or NIL."
+  (let* ((region (table-region table))
+         (hrow (ref-row (car region)))
+         (c0 (ref-col (car region))) (c1 (ref-col (cdr region)))
+         (want (string-downcase (string header))))
+    (loop for c from c0 to c1
+          for v = (read-foreign-cell target (make-ref hrow c) t)
+          when (and (typep v '(or string symbol))
+                    (string= want (string-downcase (string v))))
+            return c)))
+
+(defun foreign-table-col (target name column &optional (part :data))
+  "TABLE-COL for a table on another sheet TARGET: reads the target's settled values,
+recording a coarse cross-sheet dependency on the column."
+  (let ((table (gethash (%name-key name) (sheet-tables target))))
+    (unless table
+      (error 'unknown-name :format-control "No table named ~S in the referenced sheet"
+                           :format-arguments (list name)))
+    (let ((col (%foreign-table-col-index target table column)))
+      (unless col
+        (error 'unknown-name :format-control "Table ~S has no column ~S"
+                             :format-arguments (list name column)))
+      (ecase part
+        (:data (note-foreign-range target (make-span :col col col))
+               (let ((rows (%table-data-rows table)))
+                 (if rows (read-foreign-column-cells target col (car rows) (cdr rows)) '())))
+        ((:totals :headers)
+         (let ((row (ecase part
+                      (:headers (ref-row (car (table-region table))))
+                      (:totals (unless (table-totals-p table)
+                                 (error 'unknown-name
+                                        :format-control "Table ~S has no totals row"
+                                        :format-arguments (list name)))
+                               (ref-row (cdr (table-region table)))))))
+           (note-foreign target (make-ref row col))     ; a single foreign cell
+           (read-foreign-cell target (make-ref row col))))
+        (:this-row (error 'unknown-name
+                          :format-control "@this-row is not supported across sheets"))))))
+
 ;;; --- aggregates -----------------------------------------------------
 
 (defun flatten-numbers (args)
@@ -570,6 +679,8 @@ cells read by a formula."
         ;; table only then, so single-sheet compute stays allocation-clean.
         (*collected-foreign* (and (sheet-workbook sheet)
                                   (make-hash-table :test 'equal)))
+        (*collected-foreign-ranges* (and (sheet-workbook sheet)
+                                         (make-hash-table :test 'equal)))
         (old-value (cell-value cell))
         (old-err-p (and (cell-err cell) t)))
     ;; Commit the freshly observed precedents and back-links even when the
@@ -595,6 +706,8 @@ cells read by a formula."
       ;; foreign links to tear down after leaving one).
       (when (or *collected-foreign* (cell-foreign-precedents cell))
         (update-foreign-links sheet ref cell *collected-foreign*))
+      (when (or *collected-foreign-ranges* (cell-foreign-range-precedents cell))
+        (update-foreign-range-links sheet ref cell *collected-foreign-ranges*))
       ;; mark computed-this-sweep (success or stored error) so readers and
       ;; the recompute loop reuse the result instead of recomputing.
       (when *fresh* (setf (gethash ref *fresh*) t))
@@ -688,3 +801,46 @@ this compute, or NIL for none): drop stale producer back-links, add current ones
     (dolist (old (cell-foreign-precedents cell))
       (%remove-foreign-dependent (car old) (cdr old) self))
     (setf (cell-foreign-precedents cell) '())))
+
+;;; Cross-sheet SPAN producer side — the coarse analog of the FOREIGN-DEPENDENTS
+;;; back-links above, keyed on the target's column/row index.
+
+(defun %foreign-watchers-table (target axis)
+  (ecase axis
+    (:col (sheet-foreign-col-watchers target))
+    (:row (sheet-foreign-row-watchers target))))
+
+(defun %add-foreign-range-dependent (target axis index consumer-gref)
+  (pushnew consumer-gref (gethash index (%foreign-watchers-table target axis))
+           :test #'gref=))
+
+(defun %remove-foreign-range-dependent (target axis index consumer-gref)
+  (let* ((tab (%foreign-watchers-table target axis))
+         (rest (remove consumer-gref (gethash index tab) :test #'gref=)))
+    (if rest (setf (gethash index tab) rest) (remhash index tab))))
+
+(defun update-foreign-range-links (sheet ref cell new-table)
+  "Reconcile CELL's cross-sheet SPAN precedents against NEW-TABLE (a hash of
+(target . span) it read this compute, or NIL): drop stale target watcher entries,
+add current ones. Each span touches one watcher per column/row it spans."
+  (let ((self (cons sheet ref))
+        (new (and new-table (loop for k being the hash-keys of new-table collect k))))
+    (flet ((each-line (ts fn)                    ; ts = (target . span)
+             (let ((span (cdr ts)))
+               (loop for i from (span-lo span) to (span-hi span)
+                     do (funcall fn (car ts) (span-axis span) i)))))
+      (dolist (old (cell-foreign-range-precedents cell))
+        (unless (and new-table (gethash old new-table))
+          (each-line old (lambda (tg ax i) (%remove-foreign-range-dependent tg ax i self)))))
+      (dolist (ts new)
+        (each-line ts (lambda (tg ax i) (%add-foreign-range-dependent tg ax i self)))))
+    (setf (cell-foreign-range-precedents cell) new)))
+
+(defun detach-foreign-ranges (sheet ref cell)
+  "Drop all of CELL's cross-sheet SPAN producer back-links (used when clearing it)."
+  (let ((self (cons sheet ref)))
+    (dolist (old (cell-foreign-range-precedents cell))
+      (let ((span (cdr old)))
+        (loop for i from (span-lo span) to (span-hi span)
+              do (%remove-foreign-range-dependent (car old) (span-axis span) i self))))
+    (setf (cell-foreign-range-precedents cell) '())))

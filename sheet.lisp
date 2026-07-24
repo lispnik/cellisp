@@ -105,6 +105,11 @@ Rendered as #NUM!."))
   ;; Cross-sheet producer side: local-ref -> list of consumer grefs (sheet . ref)
   ;; in OTHER sheets that read this cell. Seeds cross-sheet propagation.
   (foreign-dependents (make-hash-table :test 'equal) :type hash-table)
+  ;; Cross-sheet SPAN producer side: a column/row index -> list of consumer grefs
+  ;; in OTHER sheets that read this whole column/row (via "Data!A:A"). The coarse
+  ;; cross-sheet analog of FOREIGN-DEPENDENTS; consulted by %FOREIGN-WORK.
+  (foreign-col-watchers (make-hash-table :test 'eql) :type hash-table)
+  (foreign-row-watchers (make-hash-table :test 'eql) :type hash-table)
   ;; Whole-column/row producer side: a column index -> the set of refs whose
   ;; formulas read that whole column (via COL/"A:A"), and likewise for rows.
   ;; Each set is a hash-table used as a ref-set. This is the coarse reverse
