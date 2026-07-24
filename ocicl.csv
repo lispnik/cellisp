@@ -21,6 +21,8 @@ cl-postgres_plus_local-time, ghcr.io/ocicl/local-time@sha256:15dc0e56d0ff55bd2a3
 cl-ppcre, ghcr.io/ocicl/cl-ppcre@sha256:bf073924cf4fd5957a4fd961a95d446ed0e53fa32a5002cbd2d52182874f45e5, cl-ppcre-20250606-a2ea581/cl-ppcre.asd
 cl-ppcre-unicode, ghcr.io/ocicl/cl-ppcre@sha256:bf073924cf4fd5957a4fd961a95d446ed0e53fa32a5002cbd2d52182874f45e5, cl-ppcre-20250606-a2ea581/cl-ppcre-unicode.asd
 cl-utilities, ghcr.io/ocicl/cl-utilities@sha256:e5e0676a4e0627332a0fe64d56ed4f1890f0466d715a11e8d95561b4c2baa38f, cl-utilities-20240503-6b4de39/cl-utilities.asd
+cl_plus_ssl, ghcr.io/ocicl/cl_plus_ssl@sha256:d50fbbba38827e835eec2415744e0fb05a2a0bf4d44940cdc23922f15036efe5, cl-plus-ssl-20251220-499b2f5/cl+ssl.asd
+cl_plus_ssl.test, ghcr.io/ocicl/cl_plus_ssl@sha256:d50fbbba38827e835eec2415744e0fb05a2a0bf4d44940cdc23922f15036efe5, cl-plus-ssl-20251220-499b2f5/cl+ssl.test.asd
 dexador, ghcr.io/ocicl/dexador@sha256:2e1ffc553039088c4ef9d30dc34f6b436fcccfa911340eb50f42199cd235394a, dexador-20260406-f068b40/dexador.asd
 dexador-test, ghcr.io/ocicl/dexador@sha256:2e1ffc553039088c4ef9d30dc34f6b436fcccfa911340eb50f42199cd235394a, dexador-20260406-f068b40/dexador-test.asd
 dexador-usocket, ghcr.io/ocicl/dexador@sha256:2e1ffc553039088c4ef9d30dc34f6b436fcccfa911340eb50f42199cd235394a, dexador-20260406-f068b40/dexador-usocket.asd
