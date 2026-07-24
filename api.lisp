@@ -361,16 +361,16 @@ it), and fires SHEET's change hook with that set, row-major sorted."
     ;; a cleared cell (EXTRA-CHANGED) is gone but still changed its column/row,
     ;; so a whole-column/row reader of it must recompute.
     (dolist (r extra-changed)
-      (setf (gethash (ref-col r) *changed-cols*) t
-            (gethash (ref-row r) *changed-rows*) t))
+      (push (ref-row r) (gethash (ref-col r) *changed-cols*))
+      (push (ref-col r) (gethash (ref-row r) *changed-rows*)))
     ;; likewise a seed that has NO cell is a cleared/absent position — mark its
     ;; column/row changed too. This is how a CLEAR-CELL deferred inside a
     ;; WITH-TRANSACTION reaches a whole-column reader at commit (the cleared cell
     ;; arrives only as a cell-less seed, without EXTRA-CHANGED threaded through).
     (dolist (s all-seeds)
       (unless (find-cell sheet s)
-        (setf (gethash (ref-col s) *changed-cols*) t
-              (gethash (ref-row s) *changed-rows*) t)))
+        (push (ref-row s) (gethash (ref-col s) *changed-cols*))
+        (push (ref-col s) (gethash (ref-row s) *changed-rows*))))
     (dolist (ref closure)
       (push ref (gethash (ref-col ref) by-col))
       (push ref (gethash (ref-row ref) by-row)))
@@ -383,11 +383,17 @@ it), and fires SHEET's change hook with that set, row-major sorted."
            (range-changed-p (cell)
              ;; a whole-column/row reader recomputes when any column/row it reads
              ;; holds a changed cell (ordering above guarantees those are settled).
+             ;; A row/column-bounded span (a table column) additionally requires the
+             ;; changed cell to fall within its orthogonal bound, so a change
+             ;; elsewhere in the physical column/row does not re-fire it.
              (some (lambda (span)
-                     (loop for i from (span-lo span) to (span-hi span)
-                           thereis (if (eq (span-axis span) :col)
-                                       (gethash i *changed-cols*)
-                                       (gethash i *changed-rows*))))
+                     (let ((colp (eq (span-axis span) :col))
+                           (bmin (span-bmin span)) (bmax (span-bmax span)))
+                       (loop for i from (span-lo span) to (span-hi span)
+                             for changed = (gethash i (if colp *changed-cols* *changed-rows*))
+                             thereis (and changed
+                                          (or (null bmin)
+                                              (some (lambda (j) (<= bmin j bmax)) changed))))))
                    (cell-range-precedents cell))))
       (dolist (ref ordered)
         (let ((cell (find-cell sheet ref)))

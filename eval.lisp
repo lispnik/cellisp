@@ -34,11 +34,13 @@ the refs already computed this sweep so each cell is computed at most once.")
 value/error actually changed — RECOMPUTE-CLOSURE uses this to short-circuit
 recompute of subtrees whose inputs did not change.")
 (defvar *changed-cols* nil
-  "When bound (a hash-table used as an index-set) for a sweep, holds the column
-indices carrying a cell whose value/error changed — so a whole-column reader
-(A:A) recomputes without a per-cell edge. Sibling: *CHANGED-ROWS*.")
+  "When bound (a hash-table) for a sweep, maps each column index carrying a cell
+whose value/error changed to the LIST of rows that changed in it — so a
+whole-column reader (A:A) recomputes on any change, while a row-bounded reader (a
+table column) recomputes only when a changed row falls in its bound. Non-NIL means
+the column changed; the row list refines it. Sibling: *CHANGED-ROWS*.")
 (defvar *changed-rows* nil
-  "Row-index counterpart of *CHANGED-COLS*.")
+  "Row-index counterpart of *CHANGED-COLS*: row index -> list of changed columns.")
 (defvar *collected-foreign* nil
   "When bound (a hash-table) during COMPUTE-CELL of a cell in a workbook sheet,
 holds the cross-sheet grefs (sheet . ref) the running formula reads. NIL for a
@@ -277,34 +279,38 @@ precedent — READ-SPAN records a coarse span dependency instead. An existing
 cell's stored error re-signals; an empty cell returns NIL."
   (if (find-cell sheet ref) (evaluate-ref sheet ref) nil))
 
+(defun %span-hits (sheet span)
+  "The refs of SHEET's populated (content) cells that lie in SPAN — on its LO..HI
+lines and, when SPAN is row/column-bounded, within its orthogonal bound — sorted
+row-major. Scans the sheet's actual cells (one pass over the populated set), not
+the used-range rectangle, so a whole-column read of a sparse column in a tall
+sheet no longer visits every empty row between its cells."
+  (let ((axis (span-axis span)) (lo (span-lo span)) (hi (span-hi span))
+        (bmin (span-bmin span)) (bmax (span-bmax span))
+        (hits '()))
+    (map-cells (lambda (ref cell)
+                 (when (%cell-content-p cell)
+                   (let ((primary (if (eq axis :col) (ref-col ref) (ref-row ref)))
+                         (ortho   (if (eq axis :col) (ref-row ref) (ref-col ref))))
+                     (when (and (<= lo primary hi)
+                                (or (null bmin) (<= bmin ortho bmax)))
+                       (push ref hits)))))
+               sheet)
+    (sort hits #'ref-lessp)))
+
 (defun read-span (sheet span &optional tolerant)
-  "Read SPAN (a whole column/row) as a flat row-major list of the populated
-cells' values, recording ONE coarse dependency on the span (NOTE-RANGE) rather
-than a per-cell precedent. Enumeration is bounded by the sheet's used range;
-empty cells are skipped. Existing errors propagate unless TOLERANT (then the
-errored cell is skipped, like SAFE-CELLS)."
+  "Read SPAN (a whole column/row, optionally row/column-bounded) as a flat
+row-major list of the populated cells' values, recording ONE coarse dependency on
+the span (NOTE-RANGE) rather than a per-cell precedent. Enumerates only the cells
+that actually hold content (see %SPAN-HITS); empty positions cost nothing.
+Existing errors propagate unless TOLERANT (then the errored cell is skipped, like
+SAFE-CELLS)."
   (note-range span)
-  (let ((ur (used-range sheet)))
-    (when ur
-      (destructuring-bind ((minr . minc) maxr . maxc) ur
-        (let ((out '()))
-          (flet ((rd (ref) (if tolerant
-                               (ignore-errors (read-cell-raw sheet ref))
-                               (read-cell-raw sheet ref))))
-            (ecase (span-axis span)
-              (:col
-               (let ((c0 (max minc (span-lo span))) (c1 (min maxc (span-hi span))))
-                 (loop for r from minr to maxr do
-                   (loop for c from c0 to c1
-                         for v = (rd (make-ref r c))
-                         do (when v (push v out))))))
-              (:row
-               (let ((r0 (max minr (span-lo span))) (r1 (min maxr (span-hi span))))
-                 (loop for r from r0 to r1 do
-                   (loop for c from minc to maxc
-                         for v = (rd (make-ref r c))
-                         do (when v (push v out))))))))
-          (nreverse out))))))
+  (loop for ref in (%span-hits sheet span)
+        for v = (if tolerant
+                    (ignore-errors (read-cell-raw sheet ref))
+                    (read-cell-raw sheet ref))
+        when v collect v))
 
 (defun col (designator &optional to)
   "Read a whole column (or band of columns) as a flat list of the populated
@@ -417,10 +423,16 @@ Signals UNKNOWN-NAME (=> #NAME?) if the table or header column is unknown."
                              :format-arguments (list name column)))
       (ecase part
         (:data
-         ;; coarse dep on the whole physical column; the table's row-bound is
-         ;; applied only at read time (a change in the column outside the table
-         ;; re-fires but recomputes to the same value).
-         (note-range (make-span :col col col))
+         ;; dep on the physical column, ROW-BOUNDED to the table so a change
+         ;; elsewhere in the column no longer re-fires this reader. The bound runs
+         ;; from the header row (a header edit re-resolves the column) through the
+         ;; last data row plus, when there is no totals row capping it, the one
+         ;; row below — the auto-grow zone, so typing a new data row still fires.
+         (let* ((region (table-region table))
+                (top (ref-row (car region)))
+                (bottom (ref-row (cdr region)))
+                (bmax (if (table-totals-p table) (1- bottom) (1+ bottom))))
+           (note-range (make-span :col col col top (max top bmax))))
          (let ((rows (%table-data-rows table)))
            (if rows (read-column-cells sheet col (car rows) (cdr rows)) '())))
         (:this-row (%table-this-row sheet table col))
@@ -469,25 +481,13 @@ re-signals unless TOLERANT. Records no dependency."
 
 (defun read-foreign-span (target span &optional tolerant)
   "Read SPAN (a whole column/row) of another sheet TARGET as a flat row-major list
-of its populated cells' values, recording one coarse cross-sheet dependency. Bounded
-by TARGET's used range; empty cells skipped."
+of its populated cells' settled values, recording one coarse cross-sheet
+dependency. Enumerates only TARGET's content cells (see %SPAN-HITS); empty
+positions cost nothing."
   (note-foreign-range target span)
-  (let ((ur (used-range target)))
-    (when ur
-      (destructuring-bind ((minr . minc) maxr . maxc) ur
-        (let ((out '()))
-          (ecase (span-axis span)
-            (:col (let ((c0 (max minc (span-lo span))) (c1 (min maxc (span-hi span))))
-                    (loop for r from minr to maxr do
-                      (loop for c from c0 to c1
-                            for v = (read-foreign-cell target (make-ref r c) tolerant)
-                            do (when v (push v out))))))
-            (:row (let ((r0 (max minr (span-lo span))) (r1 (min maxr (span-hi span))))
-                    (loop for r from r0 to r1 do
-                      (loop for c from minc to maxc
-                            for v = (read-foreign-cell target (make-ref r c) tolerant)
-                            do (when v (push v out)))))))
-          (nreverse out))))))
+  (loop for ref in (%span-hits target span)
+        for v = (read-foreign-cell target ref tolerant)
+        when v collect v))
 
 (defun %foreign-table-col-index (target table header)
   "The column index in TABLE (on sheet TARGET) whose header cell equals HEADER
@@ -715,10 +715,12 @@ cells read by a formula."
       (when (not (and (equal old-value (cell-value cell))
                       (eq old-err-p (and (cell-err cell) t))))
         (when *changed* (setf (gethash ref *changed*) t))
-        ;; mark this cell's column and row changed so a whole-column/row reader
-        ;; (A:A) of them recomputes — the coarse counterpart of *CHANGED*.
-        (when *changed-cols* (setf (gethash (ref-col ref) *changed-cols*) t))
-        (when *changed-rows* (setf (gethash (ref-row ref) *changed-rows*) t))
+        ;; record the changed cell under its column (keyed by its row) and its row
+        ;; (keyed by its column) — the coarse counterpart of *CHANGED* that a
+        ;; whole-column/row reader (A:A) recomputes from, with enough resolution
+        ;; for a row-bounded table-column reader to prune out-of-band changes.
+        (when *changed-cols* (push (ref-row ref) (gethash (ref-col ref) *changed-cols*)))
+        (when *changed-rows* (push (ref-col ref) (gethash (ref-row ref) *changed-rows*)))
         ;; also record it stickily (global handle) so a later sweep of this sheet
         ;; in the same cross-sheet cascade still sees the change (see *STICKY*).
         (when *sticky* (setf (gethash (cons sheet ref) *sticky*) t))))

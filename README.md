@@ -299,6 +299,24 @@ Two orthogonal **attributes** aren't classes at all: `set-volatile` (recompute
 every sweep, like `RAND()`/`NOW()`) and `set-frozen` (hold a value, skip
 recompute).
 
+The set is **open**. A mixin is any class overriding a cell generic
+(`compute-value :around`, `cell-swept :after`, `cell-writable-p`, …);
+`register-mixin` makes yours behave like a built-in — it joins the known-mixin set
+(so it survives further morphs and `mixins-at` reports it), takes an optional
+precedence, and, given `:dump`/`:restore`, round-trips through persistence.
+`set-mixin` attaches any mixin by designator — the general form of the drivers
+above.
+
+```lisp
+(defclass scale-mixin () ((factor :initform 1 :accessor scale-factor)))
+(defmethod compute-value :around ((c scale-mixin) sheet ref)
+  (let ((v (call-next-method))) (if (numberp v) (* (scale-factor c) v) v)))
+(register-mixin 'scale-mixin :serialize-as :scale
+                :dump (lambda (c) (scale-factor c))
+                :restore (lambda (c st) (setf (scale-factor c) st)))
+(set-mixin s "B1" 'scale-mixin)           ; now B1's value is scaled
+```
+
 ### Thread safety
 
 Every public entry point takes the sheet's recursive lock, so readers, writers,

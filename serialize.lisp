@@ -91,6 +91,15 @@ and closure-based config are not written."
       (setf (getf pl :default) t (getf pl :default-value) (cell-default cell)))
     (when (typep cell 'retry-mixin)      (setf (getf pl :retry) (retry-max cell)))
     (when (typep cell 'ttl-cached-mixin) (setf (getf pl :ttl) (cell-ttl cell)))
+    ;; user-registered mixins (REGISTER-MIXIN with :serialize-as/:dump/:restore):
+    ;; each contributes (key . state) under :custom-mixins.
+    (let ((custom '()))
+      (dolist (entry *mixin-serializers*)
+        (destructuring-bind (name key dump restore) entry
+          (declare (ignore restore))
+          (when (typep cell name)
+            (push (cons key (funcall dump cell)) custom))))
+      (when custom (setf (getf pl :custom-mixins) (nreverse custom))))
     pl))
 
 (defun sheet->form (sheet)
@@ -182,7 +191,21 @@ and closure-based config are not written."
           (when (getf pl :ttl)       (set-ttl sheet ref (getf pl :ttl)))
           (when (getf pl :external)  (set-external sheet ref (getf pl :external)))
           (when (getf pl :async)     (set-async sheet ref (getf pl :async)
-                                                 :initial (getf pl :async-initial)))))
+                                                 :initial (getf pl :async-initial)))
+          ;; user-registered mixins: re-add BEFORE the formula recompute below, so
+          ;; a value-shaping mixin participates in the load-time compute (like the
+          ;; built-in value wrappers above). A purely reactive :after mixin will
+          ;; thus observe that one compute — re-attach those manually if it must
+          ;; not. A mixin whose serializer is not currently registered is skipped,
+          ;; leaving its state in the form for a build that has it.
+          (dolist (kv (getf pl :custom-mixins))
+            (let ((entry (find (car kv) *mixin-serializers* :key #'second)))
+              (when entry
+                (destructuring-bind (name key dump restore) entry
+                  (declare (ignore key dump))
+                  (let ((cell (find-cell sheet (parse-ref ref))))
+                    (add-mixin cell name)
+                    (funcall restore cell (cdr kv)))))))))
       ;; 2. install every formula (forward references resolve, one sweep with
       ;;    the wrappers above already in place).
       (set-cells sheet (loop for pl in cells

@@ -29,6 +29,8 @@
    #:typed-input-mixin #:versioned-mixin #:audited-mixin
    #:compute-value #:cell-swept #:volatile-p #:cell-writable-p
    #:note-set #:frozen-p #:with-actor #:*actor* #:*audit-clock*
+   ;; user-defined mixins: register your own cross-cutting behavior
+   #:register-mixin #:unregister-mixin #:set-mixin #:mixins-at
    ;; cell-kind constructors / drivers
    #:set-external #:set-async #:refresh-async #:deliver-async
    #:cancel-async #:deliver-error-async #:async-pending-p #:async-status

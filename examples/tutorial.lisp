@@ -188,6 +188,30 @@
   (check "rejected value" v nil)
   (check "rejection token" (error-token e) "#VALUE!"))
 
+(defclass scale-mixin ()
+  ((factor :initform 1 :accessor scale-factor)))
+
+(defmethod compute-value :around ((cell scale-mixin) sheet ref)
+  (let ((v (call-next-method)))               ; the value the cell would have had
+    (if (numberp v) (* (scale-factor cell) v) v)))
+
+(register-mixin 'scale-mixin
+                :serialize-as :scale
+                :dump    (lambda (c) (scale-factor c))
+                :restore (lambda (c state) (setf (scale-factor c) state)))
+
+(defparameter *ext* (make-sheet))
+(set-cell *ext* "A1" 21)
+(set-cell *ext* "B1" '(cell "A1"))
+(set-mixin *ext* "B1" 'scale-mixin)
+(setf (scale-factor (find-cell *ext* (parse-ref "B1"))) 2)
+(recalc *ext* "B1")
+(check "scaled value"  (get-value *ext* "B1") 42)
+(check "mixins on B1"  (mixins-at *ext* "B1") '(scale-mixin))
+
+(let ((r (form->sheet (sheet->form *ext*))))
+  (check "scale survives reload" (get-value r "B1") 42))
+
 (defparameter *edit* (make-sheet))
 (set-cell *edit* "A1" 1)
 (set-cell *edit* "A1" 2)

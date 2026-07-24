@@ -15,6 +15,14 @@
 (defclass demo-mixin-a () ((xa :initform :a)))
 (defclass demo-mixin-b () ((xb :initform :b)))
 
+;; a user-defined mixin for the REGISTER-MIXIN extension test: a value-shaper
+;; that multiplies the computed value by a serializable factor.
+(defclass scaler-mixin () ((factor :initform 2 :accessor scaler-factor)))
+(defmethod cellisp:compute-value :around ((cell scaler-mixin) sheet ref)
+  (declare (ignore sheet ref))
+  (let ((v (call-next-method)))
+    (if (numberp v) (* (scaler-factor cell) v) v)))
+
 ;; named callback + sink for the threshold serialization round-trip test
 (defvar *thr-log* '())
 (defun thr-record (side value) (push (list side value) *thr-log*))
@@ -1328,6 +1336,37 @@ full RECALC-ALL. Returns T iff the invariant always held."
       (check (and (typep inst 'observable-mixin) t) t)
       (check (and (typep inst 'cell) t) t)))
 
+  ;; REGISTER-MIXIN / SET-MIXIN / MIXINS-AT: a user-defined value-shaping mixin
+  ;; composes, attaches by designator, survives further morphs, and round-trips.
+  (register-mixin 'scaler-mixin
+                  :serialize-as :scaler
+                  :dump (lambda (c) (scaler-factor c))
+                  :restore (lambda (c st) (setf (scaler-factor c) st)))
+  (let ((s (make-sheet)))
+    (set-cell s "A1" 10)
+    (set-cell s "B1" '(cell "A1"))
+    (check (get-value s "B1") 10)
+    (set-mixin s "B1" 'scaler-mixin)                       ; attach by designator
+    (check (and (member 'scaler-mixin (mixins-at s "B1")) t) t)
+    (check (get-value s "B1") 20)                          ; value doubled (factor 2)
+    ;; survives an unrelated morph: making it observable keeps the scaler
+    (observe s "B1" (lambda (v) (declare (ignore v))))
+    (check (and (member 'scaler-mixin (mixins-at s "B1")) t) t)
+    (recalc s "B1")
+    (check (get-value s "B1") 20)
+    ;; custom factor round-trips through save/load and re-shapes on reload
+    (setf (scaler-factor (cellisp::find-cell s (parse-ref "B1"))) 5)
+    (let ((r (form->sheet (sheet->form s))))
+      (check (and (member 'scaler-mixin (mixins-at r "B1")) t) t)
+      (check (get-value r "B1") 50))                       ; 10 * 5, applied on load
+    ;; detach removes just the scaler (the observable added above stays) and the
+    ;; value returns to plain
+    (set-mixin s "B1" 'scaler-mixin nil)
+    (check (null (member 'scaler-mixin (mixins-at s "B1"))) t)
+    (check (get-value s "B1") 10))
+  (unregister-mixin 'scaler-mixin)
+  (check (null (member 'scaler-mixin cellisp::*mixin-serializers* :key #'first)) t)
+
   ;; a value-source change PRESERVES existing mixins: observe a plain cell,
   ;; then make it external — it stays observable and becomes external.
   (let ((s (make-sheet)) (feed 3) (log '()))
@@ -2445,6 +2484,24 @@ full RECALC-ALL. Returns T iff the invariant always held."
       (check (and (member (parse-ref "E1") (cellisp::watchers-of s :col 2) :test #'equal) t) t)
       (set-cell s "C3" 1000)                                      ; change data -> re-total
       (check (get-value s "E1") 1275))                            ; 100 + 1000 + 175
+    ;; row-bounded dependency: a change ELSEWHERE in the table's physical column
+    ;; (below its rows) does NOT re-fire the reader; a change in a data row does
+    (let ((s (sales)))                                            ; A1:C4, data rows 2-4
+      (set-cell s "E1" '(progn (incf *evals*) (sum (table-col "Sales" "Amount"))))
+      (setf *evals* 0)
+      (set-cell s "C50" 9999)                                     ; column C, far below
+      (check *evals* 0)                                           ; reader NOT recomputed
+      (set-cell s "Z9" 1)                                         ; unrelated column
+      (check *evals* 0)
+      (set-cell s "C2" 500)                                       ; a real data-row change
+      (check (> *evals* 0) t)                                     ; ...does re-fire
+      (check (get-value s "E1") 925))                             ; 500 + 250 + 175
+    ;; a sparse whole-column read (gaps between populated cells) reads just them
+    (let ((s (make-sheet)))
+      (set-cell s (cellisp::make-ref 0 0) 1)                      ; A1
+      (set-cell s (cellisp::make-ref 99 0) 2)                     ; A100 (big gap)
+      (set-cell s "C1" '(sum (col "A")))
+      (check (get-value s "C1") 3))
     ;; unknown column / table -> #NAME? (set-cell re-signals the stored error)
     (let ((s (sales)))
       (ignore-errors (set-cell s "E1" '(cnt (table-col "Sales" "Nope"))))

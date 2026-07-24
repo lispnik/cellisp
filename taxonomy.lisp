@@ -379,7 +379,19 @@ before giving up — for transient failures in external/async cells."))
     ttl-cached-mixin throttled-mixin threshold-mixin stats-mixin persisted-mixin
     append-only-mixin typed-input-mixin versioned-mixin audited-mixin)
   "Known composable behavior mixins. Add a new cross-cutting axis by defining
-a mixin (overriding some generic) and listing it here.")
+a mixin (overriding some generic) and listing it here — or, from outside the
+package, with REGISTER-MIXIN, which appends to this list.")
+
+(defparameter *builtin-mixin-classes* (copy-list *mixin-classes*)
+  "The mixins shipped with cellisp — the ones REGISTER-MIXIN must never remove
+from *MIXIN-CLASSES* when UNREGISTER-MIXIN drops a user extension.")
+
+(defvar *mixin-serializers* '()
+  "User-registered mixin serializers, each (MIXIN-NAME KEY DUMP RESTORE): on save,
+a cell of type MIXIN-NAME stores (KEY . (funcall DUMP cell)) under its plist's
+:CUSTOM-MIXINS; on load, the mixin is re-added and (funcall RESTORE cell state)
+loads it. Populated by REGISTER-MIXIN; the built-in mixins are handled inline in
+serialize.lisp, not here.")
 
 (defun cell-value-source (cell)
   "The value-source class name underlying CELL."
@@ -469,6 +481,89 @@ error, dependency links, and any retained mixin slots) are preserved."
 (defun remove-mixin (cell mixin)
   "Remove MIXIN from CELL, keeping its value source and other mixins."
   (morph-cell cell (cell-value-source cell) (remove mixin (cell-mixins cell))))
+
+;;; --- extension: register your own mixin -----------------------------
+;;;
+;;; A mixin is just a class that overrides one of the cell generics (COMPUTE-VALUE
+;;; :around to shape the value, CELL-SWEPT :after to react, CELL-WRITABLE-P to
+;;; guard writes, …). COMBINED-CLASS already layers any class you name, so the
+;;; only thing a user mixin needs to behave like a built-in is (a) to be in the
+;;; known-mixin set — so it survives later morphs and is reported by MIXINS-AT —
+;;; and (b), optionally, a serializer so its durable state round-trips.
+
+(defun %ensure-known-mixin (name)
+  "Register NAME into the known-mixin set (idempotent), erroring if no such class."
+  (check-type name symbol)
+  (unless (find-class name nil)
+    (error "~S is not a defined class, so it cannot be used as a mixin." name))
+  (pushnew name *mixin-classes*)
+  name)
+
+(defun register-mixin (name &key (precedence-after nil pa-p) serialize-as dump restore)
+  "Register user-defined mixin class NAME so cellisp treats it like a built-in.
+Adds NAME to the known-mixin set, so ADD-MIXIN / SET-MIXIN keep it across later
+morphs and MIXINS-AT reports it.
+
+PRECEDENCE-AFTER, when given, must be another (already-known) mixin; NAME is then
+layered just *inside* it — its COMPUTE-VALUE :around runs one step less outer, its
+:after sink one step later. Omitted, NAME layers innermost, which suits an
+independent :after reaction (the common case).
+
+Provide all of SERIALIZE-AS (a keyword), DUMP ((cell) -> readable state) and
+RESTORE ((cell state)) to make the mixin round-trip through SHEET->FORM: DUMP is
+called for each cell carrying NAME and its result stored under SERIALIZE-AS; on
+load the mixin is re-added and RESTORE loads the state. Returns NAME."
+  (%ensure-known-mixin name)
+  (setf *mixin-precedence* (remove name *mixin-precedence*))
+  (when (and pa-p precedence-after)
+    (let ((pos (position precedence-after *mixin-precedence*)))
+      (unless pos
+        (error "REGISTER-MIXIN :precedence-after ~S is not a known mixin." precedence-after))
+      (setf *mixin-precedence*
+            (append (subseq *mixin-precedence* 0 (1+ pos))
+                    (list name)
+                    (subseq *mixin-precedence* (1+ pos))))))
+  (if (and serialize-as dump restore)
+      (progn
+        (check-type serialize-as keyword)
+        (setf *mixin-serializers*
+              (cons (list name serialize-as dump restore)
+                    (remove name *mixin-serializers* :key #'first))))
+      (setf *mixin-serializers* (remove name *mixin-serializers* :key #'first)))
+  name)
+
+(defun unregister-mixin (name)
+  "Undo REGISTER-MIXIN for NAME: drop it from precedence and the serializer
+registry, and from the known-mixin set unless it is a built-in. Cells already
+carrying NAME are unaffected. Returns NAME."
+  (setf *mixin-precedence*  (remove name *mixin-precedence*)
+        *mixin-serializers* (remove name *mixin-serializers* :key #'first))
+  (unless (member name *builtin-mixin-classes*)
+    (setf *mixin-classes* (remove name *mixin-classes*)))
+  name)
+
+(defun set-mixin (sheet designator mixin &optional (on t))
+  "Attach (ON true, the default) or detach (ON nil) composable MIXIN — a class
+name — on the cell at DESIGNATOR, keeping its value source and other mixins, then
+recompute it. The general form of the built-in SET-READONLY / SET-CACHED / …
+drivers; MIXIN may be any cellisp mixin, including one you REGISTER-MIXIN. An
+unregistered but valid mixin class is registered on first use (composition only —
+call REGISTER-MIXIN for precedence or serialization). Returns the cell's value."
+  (with-sheet-lock (sheet)
+    (%ensure-known-mixin mixin)
+    (let* ((ref (resolve-ref-in sheet designator))
+           (cell (ensure-cell sheet ref)))
+      (if on (add-mixin cell mixin) (remove-mixin cell mixin))
+      (recompute-closure sheet (list ref))
+      (cell-value cell))))
+
+(defun mixins-at (sheet designator)
+  "The composable mixin class names currently on the cell at DESIGNATOR — a list,
+empty when the cell is plain or absent. Includes any added via SET-MIXIN /
+REGISTER-MIXIN."
+  (with-sheet-lock (sheet)
+    (let ((cell (find-cell sheet (resolve-ref-in sheet designator))))
+      (and cell (cell-mixins cell)))))
 
 ;;; --- drivers: value source ------------------------------------------
 

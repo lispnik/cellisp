@@ -91,13 +91,27 @@
 ;;;; Represented as the EQUAL-comparable tagged list (AXIS LO HI), matching the
 ;;;; cons-based style of REF/range so spans work as hash-table keys and MEMBER
 ;;;; items without a custom equality.
+;;;;
+;;;; A span may also carry an optional bound on the OTHER axis — (AXIS LO HI BMIN
+;;;; BMAX) — restricting which orthogonal lines a change must fall on for the read
+;;;; to be considered affected (rows for a :COL span, columns for a :ROW span). A
+;;;; table-column read uses this to depend on just its own rows, so an edit
+;;;; elsewhere in the physical column no longer re-fires it (see RANGE-CHANGED-P).
+;;;; The unbounded whole-column/row case keeps the compact 3-element list, so
+;;;; existing spans retain their EQUAL identity and hash-key behavior.
 ;;;; ------------------------------------------------------------------
 
-(declaim (inline make-span span-axis span-lo span-hi))
-(defun make-span (axis lo hi) (list axis lo hi))
+(declaim (inline make-span span-axis span-lo span-hi span-bmin span-bmax))
+(defun make-span (axis lo hi &optional bmin bmax)
+  "Build a SPAN over AXIS (:COL/:ROW), inclusive LO..HI on that axis. BMIN/BMAX,
+when supplied, bound the OTHER axis (a partial span, used by table-column reads to
+prune out-of-table changes); omit them for a whole column/row."
+  (if bmin (list axis lo hi bmin bmax) (list axis lo hi)))
 (defun span-axis (s) (first s))
 (defun span-lo (s) (second s))
 (defun span-hi (s) (third s))
+(defun span-bmin (s) "SPAN's lower orthogonal bound, or NIL when unbounded." (fourth s))
+(defun span-bmax (s) "SPAN's upper orthogonal bound, or NIL when unbounded." (fifth s))
 
 (defun span-p (x)
   "True if X is a span — an (AXIS LO HI) list with AXIS :COL or :ROW."

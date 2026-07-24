@@ -7,6 +7,12 @@ All notable changes to Cellisp are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **User-defined behavior mixins.** `register-mixin` promotes any class that
+  overrides a cell generic to a first-class mixin: it joins the known-mixin set
+  (surviving later morphs, reported by `mixins-at`), takes an optional
+  `:precedence-after`, and — given `:serialize-as`/`:dump`/`:restore` — round-trips
+  through `sheet->form`. `set-mixin` attaches/detaches any mixin by designator (the
+  general form of `set-cached` & friends); `mixins-at` introspects a cell.
 - **Whole-column and whole-row references.** `(col "A")` / `(row 5)` read an entire
   column/row as a list — bands too (`(col "A" "C")`, `(row 2 5)`), and the Excel
   colon form through `cells` (`(cells "A:A")`, `(cells "1:1")`). These track the
@@ -33,6 +39,18 @@ All notable changes to Cellisp are documented here. The format follows
   refs (off-grid → `#REF!`); table references, being name-based, stay put.
 
 ### Changed
+- **Table-column dependencies are row-bounded.** A `(table-col …)` /
+  `Sales[Amount]` reader now depends on just the table's own rows (header through
+  the data, plus the one auto-grow row below when there is no totals row), so an
+  edit *elsewhere* in the same physical column no longer re-fires it — the coarse
+  over-fire noted when whole-column dependencies shipped. Header re-resolution and
+  auto-expand still trigger it. Internally, spans carry an optional orthogonal
+  bound and the per-sweep changed-column/row index records *which* lines changed.
+- **Whole-column/row reads scan only populated cells.** `read-span` (and its
+  cross-sheet twin) now enumerate the sheet's actual content cells rather than
+  every position in the used-range rectangle, so reading a sparse column in a tall
+  sheet no longer visits the empty rows between its cells. Values and ordering are
+  unchanged.
 - **Concurrency: unified workbook locking.** A workbook's sheets now share one
   recursive lock instead of each holding its own. A cross-sheet cascade (an edit
   on one sheet recomputing consumers on its peers) previously mutated those peer

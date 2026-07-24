@@ -456,6 +456,61 @@ Related toggles in the same family: ~set-frozen~ (make a cell read-only),
 ~set-volatile~ (always recompute), and ~set-ttl~ (expire a cached value after a
 time).
 
+** Writing your own behaviour mixin
+
+The built-in behaviours are not a closed set. A mixin is just a class that
+overrides one of the cell generics — ~compute-value :around~ to shape the value,
+~cell-swept :after~ to react to a settled recompute, ~cell-writable-p~ to guard
+writes — and ~combined-class~ already knows how to layer any class you name onto
+a cell. ~register-mixin~ makes yours behave exactly like a built-in: it joins the
+known-mixin set (so it survives later morphs and ~mixins-at~ reports it) and,
+given ~:dump~/~:restore~, round-trips through persistence.
+
+Here is a value-shaping mixin that scales a cell's computed value by a per-cell
+factor:
+
+#+begin_src lisp
+(defclass scale-mixin ()
+  ((factor :initform 1 :accessor scale-factor)))
+
+(defmethod compute-value :around ((cell scale-mixin) sheet ref)
+  (let ((v (call-next-method)))               ; the value the cell would have had
+    (if (numberp v) (* (scale-factor cell) v) v)))
+
+(register-mixin 'scale-mixin
+                :serialize-as :scale
+                :dump    (lambda (c) (scale-factor c))
+                :restore (lambda (c state) (setf (scale-factor c) state)))
+#+end_src
+
+~set-mixin~ attaches it by designator — the general form of ~set-cached~ &
+friends — and ~mixins-at~ lists what a cell carries:
+
+#+begin_src lisp
+(defparameter *ext* (make-sheet))
+(set-cell *ext* "A1" 21)
+(set-cell *ext* "B1" '(cell "A1"))
+(set-mixin *ext* "B1" 'scale-mixin)
+(setf (scale-factor (find-cell *ext* (parse-ref "B1"))) 2)
+(recalc *ext* "B1")
+(check "scaled value"  (get-value *ext* "B1") 42)
+(check "mixins on B1"  (mixins-at *ext* "B1") '(scale-mixin))
+#+end_src
+
+Because we registered a serializer, the factor survives a save/load round-trip —
+the mixin is re-added and its state restored before the reloaded formulas
+recompute, so the value comes back shaped:
+
+#+begin_src lisp
+(let ((r (form->sheet (sheet->form *ext*))))
+  (check "scale survives reload" (get-value r "B1") 42))
+#+end_src
+
+Formulas themselves are just as open: they are ordinary Lisp forms read in the
+~cellisp~ package, so any function you can name is fair game — define your own and
+call it (bare if it lives in ~cellisp~, or ~your-package:fn~ otherwise) right
+inside a cell.
+
 * Editing: undo, transactions, structure, spilling
 
 Edits are undoable, can be grouped atomically, and include structural
