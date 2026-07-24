@@ -29,9 +29,10 @@ short-circuit so an edit only recomputes what actually changed.
 
 New here? **[`TUTORIAL.org`](TUTORIAL.org)** is a from-zero, hands-on walkthrough —
 cells and formulas, recalculation and errors, names and environments, the formula
-stdlib, cell behaviours, editing/transactions/spills, workbooks, the display
-layer, and persistence. It's a *literate program*: every code block tangles into
-one runnable script, so each snippet's output is what the code actually produces.
+stdlib, whole-column/row references, tables, cell behaviours,
+editing/transactions/spills, workbooks, the display layer, and persistence. It's a
+*literate program*: every code block tangles into one runnable script, so each
+snippet's output is what the code actually produces.
 
 ```bash
 # tangle TUTORIAL.org -> examples/tutorial.lisp, then run it
