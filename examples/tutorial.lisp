@@ -122,6 +122,56 @@
     ("D1" (vlookup "cherry" (grid "A1" "B3") 2))))
 (check "vlookup over grid" (get-value *prices* "D1") 8)
 
+(defparameter *cs* (make-sheet))
+(set-cells *cs* '(("A1" 10) ("A2" 20) ("A3" 30)))
+(set-cell *cs* "C1" '(sum (col "A")))
+(check "sum(col A)"          (get-value *cs* "C1") 60)
+
+(set-cell *cs* "A9" 40)                     ; a cell added LATER, further down column A
+(check "col A picks up A9"   (get-value *cs* "C1") 100)
+
+(set-cell *cs* "C2" '(sum (cells "A:A")))   ; the Excel colon form, same result
+(check "sum(A:A)"           (get-value *cs* "C2") 100)
+
+(defparameter *rs* (make-sheet))
+(set-cells *rs* '(("A1" 5) ("B1" 6) ("C1" 7)))
+(set-cell *rs* "A3" '(sum (row 1)))          ; the reader sits OFF the row it reads
+(check "sum(row 1)"         (get-value *rs* "A3") 18)
+
+(defparameter *ts* (make-sheet))
+(set-cells *ts*
+  '(("A1" "Region") ("B1" "Qty") ("C1" "Amount")
+    ("A2" "North")  ("B2" 3)     ("C2" 100)
+    ("A3" "South")  ("B3" 10)    ("C3" 250)))
+(set-table *ts* "Sales" "A1" "C3")           ; row 1 = the header row
+(set-cell *ts* "E1" '(sum (table-col "Sales" "Amount")))
+(set-cell *ts* "E2" '(sum (cells "Sales[Amount]")))   ; Excel string form
+(check "sum(Sales[Amount])" (get-value *ts* "E1") 350)
+(check "sum via string form" (get-value *ts* "E2") 350)
+
+(set-cell *ts* "A4" "East") (set-cell *ts* "B4" 5) (set-cell *ts* "C4" 175)
+(check "table grew to A1:C4" (table-ref *ts* "Sales") '((0 . 0) . (3 . 2)))
+(check "total auto-includes the new row" (get-value *ts* "E1") 525)   ; 100+250+175
+
+(defparameter *cts* (make-sheet))
+(set-cells *cts*
+  '(("A1" "Item") ("B1" "Qty") ("C1" "Price") ("D1" "Total")
+    ("A2" "Pen")  ("B2" 3)     ("C2" 2)
+    ("A3" "Pad")  ("B3" 5)     ("C3" 4)))
+(set-table *cts* "Inv" "A1" "D3")
+(set-cells *cts*
+  '(("D2" (* (table-col "Inv" "Qty" :this-row) (table-col "Inv" "Price" :this-row)))
+    ("D3" (* (cells "Inv[@Qty]") (cells "Inv[@Price]")))))   ; string @ form
+(check "Total = Qty*Price, row 2" (get-value *cts* "D2") 6)
+(check "Total = Qty*Price, row 3" (get-value *cts* "D3") 20)
+
+(defparameter *tot* (make-sheet))
+(set-cells *tot*
+  '(("A1" "R") ("B1" "Amount") ("A2" "N") ("B2" 100) ("A3" "S") ("B3" 250) ("A4" "Total")))
+(set-table *tot* "T" "A1" "B4" :totals t)    ; row 4 is the totals row
+(set-cell *tot* "B4" '(sum (table-col "T" "Amount")))
+(check "totals cell sums the data" (get-value *tot* "B4") 350)
+
 (defparameter *log* '())
 (observe *s* "A4" (lambda (new-value) (push new-value *log*)))
 

@@ -6,6 +6,24 @@ All notable changes to Cellisp are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Whole-column and whole-row references.** `(col "A")` / `(row 5)` read an entire
+  column/row as a list — bands too (`(col "A" "C")`, `(row 2 5)`), and the Excel
+  colon form through `cells` (`(cells "A:A")`, `(cells "1:1")`). These track the
+  column/row *as a whole*: one coarse dependency (a per-sheet column/row watcher
+  index), not an edge per cell, so a change anywhere — including a cell filled in
+  *later* — re-fires the reader with no per-cell edge explosion. They shift
+  Excel-faithfully under structural edits (an endpoint deletion shrinks a band;
+  deleting the whole column yields `#REF!`).
+- **Computable tables.** `set-table` names a header'd rectangular region whose
+  columns are referenced by *header text*: `(table-col "Sales" "Amount")` or the
+  Excel string `(cells "Sales[Amount]")` reads the column's data rows and re-fires as
+  the data changes or grows. Also `Sales[@Amount]` (`:this-row`, calculated columns),
+  a `:totals`-flagged row excluded from data reads, and auto-expand when a cell is
+  typed directly below/right. Tables serialize (`:tables`, serialization version 2),
+  shift Excel-faithfully under structural edits, and reject overlap. API: `set-table`,
+  `table-ref`, `remove-table`, `map-tables`, `table-at`, `table-col`.
+
 ### Changed
 - **Concurrency: unified workbook locking.** A workbook's sheets now share one
   recursive lock instead of each holding its own. A cross-sheet cascade (an edit

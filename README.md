@@ -144,6 +144,51 @@ A name can also alias a whole **range**, read with the one-argument form of
 Both kinds of name follow their cells across structural edits and round-trip
 through serialization.
 
+### Whole-column and whole-row references
+
+`(col "A")` and `(row 5)` read an entire column or row — every populated cell — as
+a list; bands span several (`(col "A" "C")`, `(row 2 5)`), and the Excel colon form
+works through `cells`:
+
+```lisp
+(sum (col "A"))                 ; total column A — and any cell added to it later
+(average (col "A" "C"))         ; a band of columns
+(sum (cells "1:1"))             ; whole row 1, Excel-style (also "A:A", "A:C", "2:5")
+```
+
+Unlike a bounded `(cells "A1" "A100")`, a whole-column reference tracks the column
+*as a whole*: it records **one coarse dependency**, not an edge per cell, so a change
+anywhere in the column — including a cell filled in *later* — re-fires the formula,
+with no per-cell edge explosion. Whole-column/row references shift correctly under
+`insert-`/`delete-row`/`-column` (an endpoint deletion shrinks a band Excel-style;
+deleting the whole column yields `#REF!`).
+
+### Tables
+
+A **table** is a named header'd rectangle whose columns are referenced by *header
+text* rather than grid coordinate — so the reference tracks the column's data as the
+table grows, shrinks, or moves:
+
+```lisp
+(set-table s "Sales" "A1" "C20")          ; row 1 is the header row: Region / Qty / Amount
+(sum (table-col "Sales" "Amount"))        ; total the Amount column's data rows
+(sum (cells "Sales[Amount]"))             ; the same, Excel-style
+```
+
+- **Data rows only.** `table-col` reads the column's data — the header row (and a
+  totals row, below) excluded — recording the same coarse whole-column dependency as
+  `col`, so it re-fires when the data changes or grows.
+- **This-row `@`.** `(table-col "Sales" "Amount" :this-row)` / `Sales[@Amount]` reads
+  that column's cell on the *computing cell's* row — for a calculated column.
+- **Totals row.** `(set-table s "Sales" "A1" "C21" :totals t)` marks the last row a
+  totals row: excluded from data reads (so a `=(sum (table-col "Sales" "Amount"))`
+  placed there doesn't include itself), and read with `… :totals`.
+- **Auto-expand.** Typing directly below the table (a new data row) or to its right
+  (a new column) grows the region.
+
+Tables serialize, shift Excel-faithfully under structural edits, and reject overlap.
+Registration API: `set-table`, `table-ref`, `remove-table`, `map-tables`, `table-at`.
+
 ### Workbooks (multiple sheets)
 
 A **workbook** groups named sheets, and a formula reaches another sheet with a

@@ -311,6 +311,109 @@ matching row; ~grid~ reads a rectangular block of live cells as such a table:
 (check "vlookup over grid" (get-value *prices* "D1") 8)
 #+end_src
 
+* Whole-column and whole-row references
+
+Sometimes you want *all* of a column, not a bounded range — a total that keeps
+working as rows are added. ~(col "A")~ reads every populated cell of column A;
+~(row 5)~ reads a whole row; bands span several (~(col "A" "C")~), and the Excel
+colon form works through ~cells~ (~(cells "A:A")~, ~(cells "1:1")~).
+
+#+begin_src lisp
+(defparameter *cs* (make-sheet))
+(set-cells *cs* '(("A1" 10) ("A2" 20) ("A3" 30)))
+(set-cell *cs* "C1" '(sum (col "A")))
+(check "sum(col A)"          (get-value *cs* "C1") 60)
+
+(set-cell *cs* "A9" 40)                     ; a cell added LATER, further down column A
+(check "col A picks up A9"   (get-value *cs* "C1") 100)
+
+(set-cell *cs* "C2" '(sum (cells "A:A")))   ; the Excel colon form, same result
+(check "sum(A:A)"           (get-value *cs* "C2") 100)
+#+end_src
+
+The key point is the second check: ~C1~ re-totals when ~A9~ is filled in *later*,
+even though it was empty when the formula was written. A whole-column reference
+tracks the column as a whole — it records *one* coarse dependency, not an edge per
+cell, so there is no per-cell edge explosion and future cells count automatically.
+A whole *row* reads the same way:
+
+#+begin_src lisp
+(defparameter *rs* (make-sheet))
+(set-cells *rs* '(("A1" 5) ("B1" 6) ("C1" 7)))
+(set-cell *rs* "A3" '(sum (row 1)))          ; the reader sits OFF the row it reads
+(check "sum(row 1)"         (get-value *rs* "A3") 18)
+#+end_src
+
+Whole-column/row references shift correctly under structural edits, too: deleting an
+endpoint of a band shrinks it (Excel-style), and deleting the whole column leaves a
+~#REF!~.
+
+* Tables
+
+A *table* is a named header'd rectangle whose columns you reference by *header text*
+rather than grid coordinate — so the reference follows the column's data as the
+table grows, shrinks, or moves. ~set-table~ names the region (its first row is the
+header row); ~table-col~ (or the Excel string ~Name[Column]~ through ~cells~) reads
+a column's data rows.
+
+#+begin_src lisp
+(defparameter *ts* (make-sheet))
+(set-cells *ts*
+  '(("A1" "Region") ("B1" "Qty") ("C1" "Amount")
+    ("A2" "North")  ("B2" 3)     ("C2" 100)
+    ("A3" "South")  ("B3" 10)    ("C3" 250)))
+(set-table *ts* "Sales" "A1" "C3")           ; row 1 = the header row
+(set-cell *ts* "E1" '(sum (table-col "Sales" "Amount")))
+(set-cell *ts* "E2" '(sum (cells "Sales[Amount]")))   ; Excel string form
+(check "sum(Sales[Amount])" (get-value *ts* "E1") 350)
+(check "sum via string form" (get-value *ts* "E2") 350)
+#+end_src
+
+The read covers the column's *data* rows only — the header row is excluded, so the
+sum is 350 (not the text "Amount" plus the numbers). Because ~table-col~ records the
+same coarse whole-column dependency as ~col~, the total re-fires as the data changes.
+And typing a cell (a ~set-cell~) directly below the table *auto-expands* it:
+
+#+begin_src lisp
+(set-cell *ts* "A4" "East") (set-cell *ts* "B4" 5) (set-cell *ts* "C4" 175)
+(check "table grew to A1:C4" (table-ref *ts* "Sales") '((0 . 0) . (3 . 2)))
+(check "total auto-includes the new row" (get-value *ts* "E1") 525)   ; 100+250+175
+#+end_src
+
+Two more conveniences. A *calculated column* reads its own row with ~:this-row~ (the
+~Name[@Column]~ form) — the cell in a column on the *computing* cell's row:
+
+#+begin_src lisp
+(defparameter *cts* (make-sheet))
+(set-cells *cts*
+  '(("A1" "Item") ("B1" "Qty") ("C1" "Price") ("D1" "Total")
+    ("A2" "Pen")  ("B2" 3)     ("C2" 2)
+    ("A3" "Pad")  ("B3" 5)     ("C3" 4)))
+(set-table *cts* "Inv" "A1" "D3")
+(set-cells *cts*
+  '(("D2" (* (table-col "Inv" "Qty" :this-row) (table-col "Inv" "Price" :this-row)))
+    ("D3" (* (cells "Inv[@Qty]") (cells "Inv[@Price]")))))   ; string @ form
+(check "Total = Qty*Price, row 2" (get-value *cts* "D2") 6)
+(check "Total = Qty*Price, row 3" (get-value *cts* "D3") 20)
+#+end_src
+
+And a *totals row* (~:totals t~) is excluded from data reads — so a
+~(sum (table-col …))~ placed *in* the totals row sums the data without counting
+itself, no cycle:
+
+#+begin_src lisp
+(defparameter *tot* (make-sheet))
+(set-cells *tot*
+  '(("A1" "R") ("B1" "Amount") ("A2" "N") ("B2" 100) ("A3" "S") ("B3" 250) ("A4" "Total")))
+(set-table *tot* "T" "A1" "B4" :totals t)    ; row 4 is the totals row
+(set-cell *tot* "B4" '(sum (table-col "T" "Amount")))
+(check "totals cell sums the data" (get-value *tot* "B4") 350)
+#+end_src
+
+Tables serialize, shift Excel-faithfully under ~insert~/~delete~, and reject overlap;
+the registration API is ~set-table~, ~table-ref~, ~remove-table~, ~map-tables~,
+~table-at~.
+
 * Cell behaviours: observers, caching, validation
 
 Cells are CLOS objects and behaviours are mixins layered on in place. We reuse
