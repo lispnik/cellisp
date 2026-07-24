@@ -345,6 +345,14 @@ stay. Off-grid -> \"#REF!\"; an unparseable S is left unchanged."
               (render-ref col-abs nc row-abs nr))))
     (error () s)))
 
+(defun %copy-axis-shift (delta)
+  "An axis shift for copy/fill (index -> index-or-:deleted): move a line by DELTA;
+off-grid (negative) -> :DELETED so a shifted-away span/band becomes #REF!.  Used to
+shift whole-column/row references (col/row/\"A:A\") by the copy offset, the way
+COPY-SHIFT-REF shifts single-cell refs.  (Table references are by name, not
+position, so MAP-FORMULA-REFS leaves them untouched.)"
+  (lambda (i) (let ((n (+ i delta))) (if (minusp n) :deleted n))))
+
 (defun copy-cell (sheet src dst)
   "Copy SRC's formula into DST, shifting relative references by the SRC->DST
 offset while absolute ($) references stay fixed. Overwrites DST."
@@ -354,7 +362,9 @@ offset while absolute ($) references stay fixed. Overwrites DST."
            (dcol (- (ref-col dref) (ref-col sref))))
       (set-cell sheet dst
                 (map-formula-refs (get-formula sheet src)
-                                  (lambda (s) (copy-shift-ref s drow dcol)))))))
+                                  (lambda (s) (copy-shift-ref s drow dcol))
+                                  :col-fn (%copy-axis-shift dcol)
+                                  :row-fn (%copy-axis-shift drow))))))
 
 (defun fill-range (sheet src top-left bottom-right)
   "Copy SRC's formula into every cell of the TOP-LEFT..BOTTOM-RIGHT rectangle,
@@ -373,7 +383,9 @@ the whole rectangle in one recompute sweep."
               for dcol = (- c (ref-col sref))
               do (push (list (make-ref r c)
                              (map-formula-refs formula
-                               (lambda (s) (copy-shift-ref s drow dcol))))
+                               (lambda (s) (copy-shift-ref s drow dcol))
+                               :col-fn (%copy-axis-shift dcol)
+                               :row-fn (%copy-axis-shift drow)))
                        bindings)))
       (set-cells sheet (nreverse bindings)))
     (values)))

@@ -2366,6 +2366,28 @@ full RECALC-ALL. Returns T iff the invariant always held."
     (delete-row s 3)                                     ; interior row delete
     (check (get-formula s "E1") '(sum (row 2 3))))
 
+  ;; copy/fill shift whole-column/row references by the offset, like cell refs
+  (let ((s (make-sheet)))
+    (dotimes (i 3) (set-cell s (cons i 0) (1+ i)))          ; col A = 1,2,3
+    (dotimes (i 3) (set-cell s (cons i 1) (* 10 (1+ i))))   ; col B = 10,20,30
+    (set-cell s "D1" '(sum (col "A")))
+    (set-cell s "D2" '(sum (cells "A:A")))
+    (copy-cell s "D1" "E1")                                 ; right one column
+    (copy-cell s "D2" "E2")
+    (check (get-formula s "E1") '(sum (col "B")))           ; (col "A") -> (col "B")
+    (check (get-formula s "E2") '(sum (cells "B:B")))       ; "A:A" -> "B:B"
+    (check (get-value s "E1") 60)                            ; and reads column B
+    (set-cell s "G5" '(cnt (row 1)))
+    (copy-cell s "G5" "G6")                                 ; down one row
+    (check (get-formula s "G6") '(cnt (row 2))))            ; (row 1) -> (row 2)
+  ;; a table reference is by name, not position — copy leaves it untouched
+  (let ((s (make-sheet)))
+    (set-cell s "A1" "H") (set-cell s "A2" 5)
+    (set-table s "T" "A1" "A2")
+    (set-cell s "H1" '(sum (table-col "T" "H")))
+    (copy-cell s "H1" "I1")
+    (check (get-formula s "I1") '(sum (table-col "T" "H"))))
+
   ;; a whole-column reader sees a clear/add deferred inside a WITH-TRANSACTION
   (let ((s (make-sheet)))
     (dotimes (i 3) (set-cell s (cons i 0) (1+ i)))       ; A1..A3 = 1,2,3
