@@ -19,23 +19,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install SBCL (drives ocicl) and ${{ matrix.lisp }}
+      - name: Install ${{ matrix.lisp }}
         run: |
-          sudo apt-get update && sudo apt-get install -y sbcl
           if [ "${{ matrix.lisp }}" = "ccl" ]; then
             # CCL isn't in apt — install the release binary next to its heap image.
             curl -sSL https://github.com/Clozure/ccl/releases/download/v1.13/ccl-1.13-linuxx86.tar.gz \
               | tar xz -C "$HOME"
             sudo ln -s "$HOME/ccl/lx86cl64" /usr/local/bin/ccl
-          elif [ "${{ matrix.lisp }}" != "sbcl" ]; then
-            sudo apt-get install -y ${{ matrix.lisp }}
+          else
+            sudo apt-get update && sudo apt-get install -y ${{ matrix.lisp }}
           fi
 
-      - name: Install ocicl
+      - name: Install ocicl (apt repo)
         run: |
-          git clone --depth 1 https://github.com/ocicl/ocicl /tmp/ocicl
-          make -C /tmp/ocicl
-          sudo make -C /tmp/ocicl install
+          curl -fsSL https://ocicl.github.io/ocicl/deb-repo/ocicl-archive-keyring.gpg \
+            | sudo tee /usr/share/keyrings/ocicl-archive-keyring.asc > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/ocicl-archive-keyring.asc] https://ocicl.github.io/ocicl/deb-repo stable main" \
+            | sudo tee /etc/apt/sources.list.d/ocicl.list
+          sudo apt-get update && sudo apt-get install -y ocicl ca-certificates
           ocicl setup > /dev/null
 
       - name: Fetch dependencies (ocicl.csv -> ./ocicl)
@@ -65,11 +66,13 @@ jobs:
           git diff --exit-code --ignore-blank-lines -- examples/tutorial.lisp \
             || { echo "::error::examples/tutorial.lisp is out of sync with TUTORIAL.org — re-tangle and commit it."; exit 1; }
 
-      - name: Install ocicl and fetch dependencies
+      - name: Install ocicl (apt repo) and fetch dependencies
         run: |
-          git clone --depth 1 https://github.com/ocicl/ocicl /tmp/ocicl
-          make -C /tmp/ocicl
-          sudo make -C /tmp/ocicl install
+          curl -fsSL https://ocicl.github.io/ocicl/deb-repo/ocicl-archive-keyring.gpg \
+            | sudo tee /usr/share/keyrings/ocicl-archive-keyring.asc > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/ocicl-archive-keyring.asc] https://ocicl.github.io/ocicl/deb-repo stable main" \
+            | sudo tee /etc/apt/sources.list.d/ocicl.list
+          sudo apt-get update && sudo apt-get install -y ocicl ca-certificates
           ocicl setup > /dev/null
           ocicl install
 
