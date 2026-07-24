@@ -39,13 +39,16 @@ All notable changes to Cellisp are documented here. The format follows
   refs (off-grid → `#REF!`); table references, being name-based, stay put.
 
 ### Changed
-- **Table-column dependencies are row-bounded.** A `(table-col …)` /
-  `Sales[Amount]` reader now depends on just the table's own rows (header through
+- **Table-column dependencies are row-bounded** — within *and across* sheets. A
+  `(table-col …)` / `Sales[Amount]` reader (and its cross-sheet form,
+  `Data!Sales[Amount]`) now depends on just the table's own rows (header through
   the data, plus the one auto-grow row below when there is no totals row), so an
   edit *elsewhere* in the same physical column no longer re-fires it — the coarse
   over-fire noted when whole-column dependencies shipped. Header re-resolution and
   auto-expand still trigger it. Internally, spans carry an optional orthogonal
-  bound and the per-sweep changed-column/row index records *which* lines changed.
+  bound, the per-sweep changed-column/row index records *which* lines changed, and
+  each cross-sheet column/row watcher entry carries the consumer's bound so the
+  workbook cascade gates on it.
 - **Whole-column/row reads scan only populated cells.** `read-span` (and its
   cross-sheet twin) now enumerate the sheet's actual content cells rather than
   every position in the used-range rectangle, so reading a sparse column in a tall

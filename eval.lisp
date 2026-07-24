@@ -514,9 +514,18 @@ recording a coarse cross-sheet dependency on the column."
         (error 'unknown-name :format-control "Table ~S has no column ~S"
                              :format-arguments (list name column)))
       (ecase part
-        (:data (note-foreign-range target (make-span :col col col))
-               (let ((rows (%table-data-rows table)))
-                 (if rows (read-foreign-column-cells target col (car rows) (cdr rows)) '())))
+        (:data
+         ;; row-bounded cross-sheet dep (like the local TABLE-COL): a change
+         ;; outside the table's rows on the target column no longer re-fires this
+         ;; consumer. Bound = header row through the last data row (+ the auto-grow
+         ;; row below when there is no totals row).
+         (let* ((region (table-region table))
+                (top (ref-row (car region)))
+                (bottom (ref-row (cdr region)))
+                (bmax (if (table-totals-p table) (1- bottom) (1+ bottom))))
+           (note-foreign-range target (make-span :col col col top (max top bmax))))
+         (let ((rows (%table-data-rows table)))
+           (if rows (read-foreign-column-cells target col (car rows) (cdr rows)) '())))
         ((:totals :headers)
          (let ((row (ecase part
                       (:headers (ref-row (car (table-region table))))
@@ -812,13 +821,24 @@ this compute, or NIL for none): drop stale producer back-links, add current ones
     (:col (sheet-foreign-col-watchers target))
     (:row (sheet-foreign-row-watchers target))))
 
-(defun %add-foreign-range-dependent (target axis index consumer-gref)
-  (pushnew consumer-gref (gethash index (%foreign-watchers-table target axis))
-           :test #'gref=))
+;; A foreign range-watcher entry is (CONSUMER-GREF . BOUND), where BOUND is
+;; (bmin . bmax) on the orthogonal axis (rows for a :COL watcher) or NIL for a
+;; whole-column/row read. The bound lets %FOREIGN-WORK skip a consumer whose table
+;; rows don't cover the changed cell. A consumer that reads the same target line
+;; both bounded and unbounded keeps both entries; the unbounded one always fires.
 
-(defun %remove-foreign-range-dependent (target axis index consumer-gref)
+(defun %fr-entry= (a b)
+  "Equality on foreign range-watcher entries: same consumer gref and same bound."
+  (and (gref= (car a) (car b)) (equal (cdr a) (cdr b))))
+
+(defun %add-foreign-range-dependent (target axis index consumer-gref bound)
+  (pushnew (cons consumer-gref bound)
+           (gethash index (%foreign-watchers-table target axis))
+           :test #'%fr-entry=))
+
+(defun %remove-foreign-range-dependent (target axis index consumer-gref bound)
   (let* ((tab (%foreign-watchers-table target axis))
-         (rest (remove consumer-gref (gethash index tab) :test #'gref=)))
+         (rest (remove (cons consumer-gref bound) (gethash index tab) :test #'%fr-entry=)))
     (if rest (setf (gethash index tab) rest) (remhash index tab))))
 
 (defun update-foreign-range-links (sheet ref cell new-table)
@@ -828,21 +848,23 @@ add current ones. Each span touches one watcher per column/row it spans."
   (let ((self (cons sheet ref))
         (new (and new-table (loop for k being the hash-keys of new-table collect k))))
     (flet ((each-line (ts fn)                    ; ts = (target . span)
-             (let ((span (cdr ts)))
+             (let* ((span (cdr ts))
+                    (bound (and (span-bmin span) (cons (span-bmin span) (span-bmax span)))))
                (loop for i from (span-lo span) to (span-hi span)
-                     do (funcall fn (car ts) (span-axis span) i)))))
+                     do (funcall fn (car ts) (span-axis span) i bound)))))
       (dolist (old (cell-foreign-range-precedents cell))
         (unless (and new-table (gethash old new-table))
-          (each-line old (lambda (tg ax i) (%remove-foreign-range-dependent tg ax i self)))))
+          (each-line old (lambda (tg ax i b) (%remove-foreign-range-dependent tg ax i self b)))))
       (dolist (ts new)
-        (each-line ts (lambda (tg ax i) (%add-foreign-range-dependent tg ax i self)))))
+        (each-line ts (lambda (tg ax i b) (%add-foreign-range-dependent tg ax i self b)))))
     (setf (cell-foreign-range-precedents cell) new)))
 
 (defun detach-foreign-ranges (sheet ref cell)
   "Drop all of CELL's cross-sheet SPAN producer back-links (used when clearing it)."
   (let ((self (cons sheet ref)))
     (dolist (old (cell-foreign-range-precedents cell))
-      (let ((span (cdr old)))
+      (let* ((span (cdr old))
+             (bound (and (span-bmin span) (cons (span-bmin span) (span-bmax span)))))
         (loop for i from (span-lo span) to (span-hi span)
-              do (%remove-foreign-range-dependent (car old) (span-axis span) i self))))
+              do (%remove-foreign-range-dependent (car old) (span-axis span) i self bound))))
     (setf (cell-foreign-range-precedents cell) '())))

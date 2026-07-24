@@ -2448,6 +2448,22 @@ full RECALC-ALL. Returns T iff the invariant always held."
     (set-cell data "C2" "North")                           ; an UNwatched column (C)
     (check (get-value main "B2") 1250))                    ; leaves the column-D reader
 
+  ;; a cross-sheet TABLE column is row-bounded too: a change outside the target
+  ;; table's rows (but in its physical column) does NOT re-fire the foreign consumer
+  (let* ((wb (make-workbook))
+         (data (add-sheet wb "Data")) (main (add-sheet wb "Main")))
+    (set-cell data "A1" "Amount")
+    (set-cell data "A2" 100) (set-cell data "A3" 250)
+    (set-table data "Sales" "A1" "A3")                     ; rows 0-2, data rows 1-2
+    (set-cell main "B1" '(progn (incf *evals*) (sum (cells "Data!Sales[Amount]"))))
+    (check (get-value main "B1") 350)
+    (setf *evals* 0)
+    (set-cell data "A50" 9999)                             ; far below the table, col A
+    (check *evals* 0)                                      ; foreign consumer untouched
+    (set-cell data "A2" 500)                               ; a real data-row change
+    (check (> *evals* 0) t)                                ; ...does re-fire
+    (check (get-value main "B1") 750))                     ; 500 + 250
+
   ;; a whole-column reader sees a clear/add deferred inside a WITH-TRANSACTION
   (let ((s (make-sheet)))
     (dotimes (i 3) (set-cell s (cons i 0) (1+ i)))       ; A1..A3 = 1,2,3

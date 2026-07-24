@@ -459,8 +459,15 @@ an ordered alist (consumer-sheet . refs) — both the per-cell readers
                (pushnew cr (gethash cs by-sheet) :test #'equal))))
       (dolist (r changed)
         (dolist (g (gethash r (sheet-foreign-dependents sheet))) (add g))
-        (dolist (g (gethash (ref-col r) (sheet-foreign-col-watchers sheet))) (add g))
-        (dolist (g (gethash (ref-row r) (sheet-foreign-row-watchers sheet))) (add g))))
+        ;; a whole-column/row watcher entry is (consumer-gref . bound); fire it
+        ;; only when the changed cell falls within the consumer's orthogonal bound
+        ;; (rows for a column watcher), or unconditionally when unbounded.
+        (dolist (e (gethash (ref-col r) (sheet-foreign-col-watchers sheet)))
+          (let ((bound (cdr e)))
+            (when (or (null bound) (<= (car bound) (ref-row r) (cdr bound))) (add (car e)))))
+        (dolist (e (gethash (ref-row r) (sheet-foreign-row-watchers sheet)))
+          (let ((bound (cdr e)))
+            (when (or (null bound) (<= (car bound) (ref-col r) (cdr bound))) (add (car e)))))))
     (loop for cs in (nreverse order) collect (cons cs (gethash cs by-sheet)))))
 
 (defun cascade-foreign (origin changed)
