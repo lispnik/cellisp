@@ -12,9 +12,8 @@
 ;;;; Optionally pass a scale factor (default 1) to grow every workload:
 ;;;;   sbcl --script bench.lisp 4
 
-(let ((ql (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file ql) (load ql)))
-#+quicklisp (ql:quickload "bordeaux-threads" :silent t)
+(asdf:initialize-source-registry            ; find cellisp + its ocicl deps under ./
+ (list :source-registry (list :tree (uiop:getcwd)) :inherit-configuration))
 (asdf:load-system "cellisp")
 
 (in-package #:cellisp)

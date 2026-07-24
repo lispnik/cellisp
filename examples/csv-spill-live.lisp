@@ -16,9 +16,9 @@
 ;;;; The dump truncates each cell so the very wide columns stay readable.
 
 (require :asdf)
-(let ((ql (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file ql) (load ql)))
-#+quicklisp (ql:quickload '("bordeaux-threads" "dexador") :silent t)
+(asdf:initialize-source-registry            ; find cellisp + its ocicl deps under ./
+ (list :source-registry (list :tree (uiop:getcwd)) :inherit-configuration))
+(asdf:load-system "dexador")           ; the example fetches over HTTP
 (asdf:load-system "cellisp")
 (asdf:load-system "cellisp/display")
 

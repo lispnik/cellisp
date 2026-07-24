@@ -1,7 +1,8 @@
-(:CELLISP-WORKBOOK :VERSION 1 :SHEETS
- (("Sales" :CELLISP-SHEET :VERSION 1 :ENVIRONMENT NIL :NAMES
+(:CELLISP-WORKBOOK :VERSION 2 :SHEETS
+ (("Sales" :CELLISP-SHEET :VERSION 2 :ENVIRONMENT NIL :NAMES
    (("TOTAL_REV" . "D5") ("REVENUE" "D2" "D4")) :NOTES
-   (("D5" . "sum of all product revenue")) :MERGES (("A5" . "C5")) :CELLS
+   (("D5" . "sum of all product revenue")) :MERGES (("A5" . "C5")) :SPILLS NIL
+   :TABLES NIL :CELLS
    ((:REF "A1" :FORMULA "Product") (:REF "B1" :FORMULA "Units")
     (:REF "C1" :FORMULA "Price") (:REF "D1" :FORMULA "Revenue")
     (:REF "A2" :FORMULA "Widget") (:REF "B2" :FORMULA 3000)
@@ -11,8 +12,9 @@
     (:REF "A4" :FORMULA "Gizmo") (:REF "B4" :FORMULA 1500)
     (:REF "C4" :FORMULA 15) (:REF "D4" :FORMULA (* (CELL "B4") (CELL "C4")))
     (:REF "A5" :FORMULA "Total") (:REF "D5" :FORMULA (SUM (CELLS "revenue")))))
-  ("Costs" :CELLISP-SHEET :VERSION 1 :ENVIRONMENT NIL :NAMES
-   (("TOTAL_COST" . "B6")) :NOTES NIL :MERGES NIL :CELLS
+  ("Costs" :CELLISP-SHEET :VERSION 2 :ENVIRONMENT NIL :NAMES
+   (("TOTAL_COST" . "B6")) :NOTES NIL :MERGES NIL :SPILLS NIL :TABLES NIL
+   :CELLS
    ((:REF "A1" :FORMULA "Category") (:REF "B1" :FORMULA "Amount")
     (:REF "A2" :FORMULA "COGS (40% rev)")
     (:REF "B2" :FORMULA (* (CELL "Sales!total_rev") 2/5))
@@ -20,10 +22,10 @@
     (:REF "A4" :FORMULA "Marketing") (:REF "B4" :FORMULA 12000)
     (:REF "A5" :FORMULA "Rent") (:REF "B5" :FORMULA 8000)
     (:REF "A6" :FORMULA "Total") (:REF "B6" :FORMULA (SUM (CELLS "B2" "B5")))))
-  ("Summary" :CELLISP-SHEET :VERSION 1 :ENVIRONMENT ((TAX . 21/100)) :NAMES
+  ("Summary" :CELLISP-SHEET :VERSION 2 :ENVIRONMENT ((TAX . 21/100)) :NAMES
    (("NET_PROFIT" . "B6")) :NOTES
    (("B5" . "flat 21% corporate rate (the env constant `tax`)")) :MERGES
-   (("A1" . "B1")) :CELLS
+   (("A1" . "B1")) :SPILLS NIL :TABLES NIL :CELLS
    ((:REF "A1" :FORMULA "Quarterly P&L") (:REF "A2" :FORMULA "Revenue")
     (:REF "B2" :FORMULA (CELL "Sales!total_rev"))
     (:REF "A3" :FORMULA "Total Costs")

@@ -20,9 +20,9 @@
 ;;;; Only usocket is added (server + client, both), keeping core dependency-free.
 
 (require :asdf)
-(let ((ql (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file ql) (load ql)))
-#+quicklisp (ql:quickload '("bordeaux-threads" "usocket") :silent t)
+(asdf:initialize-source-registry            ; find cellisp + its ocicl deps under ./
+ (list :source-registry (list :tree (uiop:getcwd)) :inherit-configuration))
+(asdf:load-system "usocket")           ; the example uses it directly
 (asdf:load-system "cellisp")
 (asdf:load-system "cellisp/display")
 

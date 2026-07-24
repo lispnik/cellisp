@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+# Dependencies come from ocicl (pinned in ocicl.csv): `ocicl install' places
+# bordeaux-threads + its transitive deps under ./ocicl, which the ASDF source
+# registry then finds — no quicklisp, and no global Lisp configuration.
 jobs:
   test:
     name: ${{ matrix.lisp }}
@@ -16,31 +19,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ${{ matrix.lisp }}
+      - name: Install SBCL (drives ocicl) and ${{ matrix.lisp }}
         run: |
+          sudo apt-get update && sudo apt-get install -y sbcl
           if [ "${{ matrix.lisp }}" = "ccl" ]; then
             # CCL isn't in apt — install the release binary next to its heap image.
             curl -sSL https://github.com/Clozure/ccl/releases/download/v1.13/ccl-1.13-linuxx86.tar.gz \
               | tar xz -C "$HOME"
             sudo ln -s "$HOME/ccl/lx86cl64" /usr/local/bin/ccl
-          else
-            sudo apt-get update && sudo apt-get install -y ${{ matrix.lisp }}
+          elif [ "${{ matrix.lisp }}" != "sbcl" ]; then
+            sudo apt-get install -y ${{ matrix.lisp }}
           fi
 
-      - name: Download Quicklisp
-        run: curl -sSL https://beta.quicklisp.org/quicklisp.lisp -o /tmp/quicklisp.lisp
-
-      - name: Register the project with ASDF
+      - name: Install ocicl
         run: |
-          mkdir -p ~/quicklisp/local-projects
-          ln -s "$GITHUB_WORKSPACE" ~/quicklisp/local-projects/cellisp
+          git clone --depth 1 https://github.com/ocicl/ocicl /tmp/ocicl
+          make -C /tmp/ocicl
+          sudo make -C /tmp/ocicl install
+          ocicl setup > /dev/null
 
-      - name: Install Quicklisp and run the test suite
-        run: >
-          ${{ matrix.lisp }}
-          --load /tmp/quicklisp.lisp
-          --eval '(quicklisp-quickstart:install)'
-          --load "$GITHUB_WORKSPACE/.github/run-tests.lisp"
+      - name: Fetch dependencies (ocicl.csv -> ./ocicl)
+        run: ocicl install
+
+      - name: Run the test suite
+        run: ${{ matrix.lisp }} --load .github/run-tests.lisp
 
   # The literate tutorial: prove examples/tutorial.lisp is in sync with
   # TUTORIAL.org (re-tangle and diff), then run it — its own CHECK helper exits
@@ -63,17 +65,13 @@ jobs:
           git diff --exit-code --ignore-blank-lines -- examples/tutorial.lisp \
             || { echo "::error::examples/tutorial.lisp is out of sync with TUTORIAL.org — re-tangle and commit it."; exit 1; }
 
-      - name: Install Quicklisp
+      - name: Install ocicl and fetch dependencies
         run: |
-          curl -sSL https://beta.quicklisp.org/quicklisp.lisp -o /tmp/quicklisp.lisp
-          sbcl --non-interactive \
-            --load /tmp/quicklisp.lisp \
-            --eval '(quicklisp-quickstart:install)'
-
-      - name: Register the project with ASDF
-        run: |
-          mkdir -p ~/quicklisp/local-projects
-          ln -s "$GITHUB_WORKSPACE" ~/quicklisp/local-projects/cellisp
+          git clone --depth 1 https://github.com/ocicl/ocicl /tmp/ocicl
+          make -C /tmp/ocicl
+          sudo make -C /tmp/ocicl install
+          ocicl setup > /dev/null
+          ocicl install
 
       - name: Run the tutorial (self-checking; non-zero exit on any mismatch)
         run: sbcl --script examples/tutorial.lisp

@@ -48,18 +48,21 @@ so you can run it directly without Emacs.
 
 - A Common Lisp implementation — the test suite runs on **SBCL**, **ECL**, and
   **CCL** (all in CI; the code uses no implementation-specific symbols).
-- [`bordeaux-threads`](https://common-lisp.net/project/bordeaux-threads/) (per-sheet locking).
-- ASDF, and the project visible to it (e.g. symlinked into `~/quicklisp/local-projects/`).
+- ASDF and [ocicl](https://github.com/ocicl/ocicl). The one dependency,
+  [`bordeaux-threads`](https://common-lisp.net/project/bordeaux-threads/)
+  (per-sheet locking), is pinned in `ocicl.csv`; `ocicl install` unpacks it under
+  `./ocicl`, and everything then resolves from this directory — no global config.
 
 ## Load & test
 
-```lisp
-(asdf:load-system "cellisp")
-(asdf:test-system "cellisp")         ; prints "N checks, M failures."
+```bash
+ocicl install                        # fetch bordeaux-threads (once), into ./ocicl
+sbcl --eval '(asdf:test-system "cellisp")' --quit    # prints "N checks, M failures."
 ```
 
-```bash
-sbcl --eval '(asdf:test-system "cellisp")' --quit
+```lisp
+(asdf:load-system "cellisp")
+(asdf:test-system "cellisp")         ; from a REPL, once the project is on the registry
 ```
 
 ## Benchmark

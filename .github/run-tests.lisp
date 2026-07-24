@@ -1,19 +1,19 @@
-;;;; CI entry point: load Quicklisp, ensure bordeaux-threads, run the suite,
-;;;; and exit non-zero on any failure. Portable across SBCL / CCL / ECL.
+;;;; CI entry point: run both suites, exit non-zero on any failure.  Portable
+;;;; across SBCL / CCL / ECL; no quicklisp.
+;;;;
+;;;; Register this project tree (computed from this file's location, ../ from
+;;;; .github/) on the ASDF source registry.  `ocicl install' has placed the deps
+;;;; (bordeaux-threads + transitive) under ./ocicl, which the :tree scan finds —
+;;;; so the run is self-contained, needing no global Lisp configuration.
 
-;;; Register the project directly on ASDF's central registry, computed from this
-;;; file's own location (../ from .github/). This is more portable than relying
-;;; on the ~/quicklisp/local-projects symlink — ECL's local-projects scan does
-;;; not reliably follow a symlinked directory, so find-system would miss it.
-(pushnew (uiop:pathname-parent-directory-pathname
-          (uiop:pathname-directory-pathname *load-truename*))
-         asdf:*central-registry* :test #'equal)
+(require :asdf)
+(let ((root (uiop:pathname-parent-directory-pathname
+             (uiop:pathname-directory-pathname *load-truename*))))
+  (asdf:initialize-source-registry
+   (list :source-registry (list :tree root) :inherit-configuration)))
 
-(let ((ql (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file ql) (load ql)))
 (handler-case
     (progn
-      #+quicklisp (ql:quickload "bordeaux-threads" :silent t)
       (asdf:test-system "cellisp")
       (asdf:test-system "cellisp/display")
       (uiop:quit 0))

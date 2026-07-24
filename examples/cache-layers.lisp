@@ -13,9 +13,8 @@
 ;;;; with an :AROUND method, so each wraps the next; combined-class stacks them.
 
 (require :asdf)
-(let ((ql (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file ql) (load ql)))
-#+quicklisp (ql:quickload "bordeaux-threads" :silent t)
+(asdf:initialize-source-registry            ; find cellisp + its ocicl deps under ./
+ (list :source-registry (list :tree (uiop:getcwd)) :inherit-configuration))
 (asdf:load-system "cellisp")
 (in-package #:cellisp)
 

@@ -54,16 +54,16 @@ errors, and can persist and render the result.
 * Setup: loading the engine
 
 The first block loads the system. It mirrors the pattern used by the other
-files under =examples/=: pull in ASDF, load Quicklisp if it is present (only
-needed for the ~bordeaux-threads~ dependency), then load the ~cellisp~ system
-and its optional display layer. We work inside the ~cellisp~ package and pull
-in the display symbols so everything reads unqualified.
+files under =examples/=: pull in ASDF, register this directory on its source
+registry (so the ~ocicl~-installed dependency ~bordeaux-threads~, unpacked under
+=./ocicl=, is found), then load the ~cellisp~ system and its optional display
+layer. We work inside the ~cellisp~ package and pull in the display symbols so
+everything reads unqualified.
 
 #+begin_src lisp
 (require :asdf)
-(let ((ql (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file ql) (load ql)))
-#+quicklisp (ql:quickload "bordeaux-threads" :silent t)
+(asdf:initialize-source-registry            ; find cellisp + its ocicl deps under ./
+ (list :source-registry (list :tree (uiop:getcwd)) :inherit-configuration))
 (asdf:load-system "cellisp")
 (asdf:load-system "cellisp/display")
 
